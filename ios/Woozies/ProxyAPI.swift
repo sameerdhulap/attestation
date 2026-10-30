@@ -13,6 +13,8 @@ struct ProxyError: LocalizedError {
             return "The proxy has App Attest turned off. Add Apple's root certificate to its certs folder."
         case "apple_team_id_missing", "apple_team_id_invalid":
             return "The app has no valid Team ID. Set DEVELOPMENT_TEAM in project.yml and rebuild."
+        case "app_not_allowed":
+            return "The proxy doesn't serve this app. Add its bundle ID to IOS_BUNDLE_IDS."
         case "debug_token_invalid":
             return "The proxy didn't accept the simulator debug token. Add it to ATTEST_DEBUG_TOKENS."
         case "upstream_auth_failed":
@@ -86,6 +88,8 @@ struct ProxyAPI {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(clientId, forHTTPHeaderField: "X-Client-Id")
+        // Tells a proxy serving several apps which one this is.
+        request.setValue(Bundle.main.bundleIdentifier, forHTTPHeaderField: "X-iOS-Identifier")
         for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
         request.httpBody = try JSONEncoder().encode(body)
         let (data, response) = try await session.data(for: request)

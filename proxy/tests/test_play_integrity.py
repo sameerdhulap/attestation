@@ -7,7 +7,7 @@ import pytest
 
 from attestation.config import AttestationError, KeyConfig, Mode
 from attestation.play_integrity import PlayIntegrityVerifier
-from conftest import CLIENT_ID, H, WOOSMAP_KEY, get_challenge
+from conftest import CLIENT_ID, H, WOOSMAP_KEY, get_challenge, token_claims
 
 PACKAGE = "com.woosmap.app.woozies"
 CERT = hashlib.sha256(b"release-cert").digest()
@@ -17,20 +17,23 @@ OTHER_CERT_B64 = (
     .rstrip(b"=")
     .decode()
 )
+OTHER_PACKAGE = "com.woosmap.app.other"
+# Android apps name their package when they ask the proxy for a token.
+AH = {**H, "X-Android-Identifier": PACKAGE}
 SHA1 = "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD"
 
 
-def payload(nonce: str, **overrides) -> dict:
+def payload(nonce: str, package: str = PACKAGE, **overrides) -> dict:
     """A Play Integrity verdict as Google's decodeIntegrityToken returns it."""
     verdict = {
         "requestDetails": {
-            "requestPackageName": PACKAGE,
+            "requestPackageName": package,
             "nonce": nonce,
             "timestampMillis": str(int(time.time() * 1000)),
         },
         "appIntegrity": {
             "appRecognitionVerdict": "PLAY_RECOGNIZED",
-            "packageName": PACKAGE,
+            "packageName": package,
             "certificateSha256Digest": [CERT_B64],
         },
         "deviceIntegrity": {"deviceRecognitionVerdict": ["MEETS_DEVICE_INTEGRITY"]},
@@ -168,7 +171,7 @@ def test_android_token_exchanged_and_used(make_client, woosmap):
         decoder.verdict = payload(challenge)
         resp = c.post(
             "/attest/android/token",
-            headers=H,
+            headers=AH,
             json={"integrity_token": "integrity-token", "challenge": challenge},
         )
         assert resp.status_code == 200, resp.text
@@ -197,11 +200,52 @@ def test_android_challenge_single_use(make_client):
         challenge = get_challenge(c)
         decoder.verdict = payload(challenge)
         body = {"integrity_token": "integrity-token", "challenge": challenge}
-        assert c.post("/attest/android/token", headers=H, json=body).status_code == 200
+        assert c.post("/attest/android/token", headers=AH, json=body).status_code == 200
         assert (
-            c.post("/attest/android/token", headers=H, json=body).json()["error"]
+            c.post("/attest/android/token", headers=AH, json=body).json()["error"]
             == "challenge_invalid"
         )
+
+
+def test_second_android_app_gets_its_own_token(make_client):
+    decoder = FakeDecoder()
+    with make_client(
+        play_integrity=PlayIntegrityVerifier(decoder),
+        android_packages=(PACKAGE, OTHER_PACKAGE),
+    ) as c:
+        challenge = get_challenge(c)
+        decoder.verdict = payload(challenge, package=OTHER_PACKAGE)
+        resp = c.post(
+            "/attest/android/token",
+            headers={**H, "X-Android-Identifier": OTHER_PACKAGE},
+            json={"integrity_token": "integrity-token", "challenge": challenge},
+        )
+    assert resp.status_code == 200, resp.text
+    assert decoder.calls == [(OTHER_PACKAGE, "integrity-token")]
+    assert token_claims(resp.json()["token"])["app"] == OTHER_PACKAGE
+
+
+def test_android_package_missing_rejected(make_client):
+    with make_client(play_integrity=PlayIntegrityVerifier(FakeDecoder())) as c:
+        resp = c.post(
+            "/attest/android/token",
+            headers=H,
+            json={"integrity_token": "x", "challenge": get_challenge(c)},
+        )
+    assert resp.status_code == 400
+    assert resp.json() == {"error": "app_identifier_missing"}
+
+
+def test_unlisted_android_package_rejected(make_client):
+    decoder = FakeDecoder()
+    with make_client(play_integrity=PlayIntegrityVerifier(decoder)) as c:
+        resp = c.post(
+            "/attest/android/token",
+            headers={**H, "X-Android-Identifier": OTHER_PACKAGE},
+            json={"integrity_token": "x", "challenge": get_challenge(c)},
+        )
+    assert resp.json() == {"error": "play_integrity_wrong_app"}
+    assert decoder.calls == []
 
 
 def test_play_integrity_disabled_unless_configured(client):

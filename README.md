@@ -22,7 +22,7 @@ iOS app (com.woosmap.app.woozies)            Python proxy                       
 | --- | --- |
 | `proxy/` | FastAPI proxy: App Attest and Play Integrity verification, an optional Firebase App Check path, a simulator debug-token path, and allow-listed Woosmap API forwarding |
 | `proxy/attestation/` | The attestation core (App Attest, Play Integrity, tokens, gateway check) |
-| `proxy/tests/` | 43 tests, including a fake Apple authority and a fake Play Integrity decoder, so nothing needs a device |
+| `proxy/tests/` | 52 tests, including a fake Apple authority and a fake Play Integrity decoder, so nothing needs a device |
 | `ios/` | SwiftUI app plus an XcodeGen `project.yml` |
 | `android/` | Kotlin + Jetpack Compose app using the same proxy |
 
@@ -32,7 +32,7 @@ iOS app (com.woosmap.app.woozies)            Python proxy                       
 cd proxy
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
-python -m pytest -q                      # optional: 43 tests
+python -m pytest -q                      # optional: 52 tests
 uvicorn woozies_proxy.main:build_app --factory --host 0.0.0.0 --port 8000 --reload
 ```
 
@@ -45,7 +45,24 @@ Check the setup at `http://localhost:8000/health`. It reports whether App Attest
 1. Download Apple's App Attestation Root CA from [Apple's Certificate Authority page](https://www.apple.com/certificateauthority/) and save it as `proxy/certs/Apple_App_Attestation_Root_CA.pem`.
 2. Restart the proxy. `/health` should now show `"app_attest": true`.
 
-The proxy doesn't need your Team ID. The app sends it as `X-Apple-Team-Id` when it registers its App Attest key, and the proxy checks the attestation against `<Team ID>.<IOS_BUNDLE_ID>`.
+The proxy doesn't need your Team ID. The app sends it as `X-Apple-Team-Id` when it registers its App Attest key, and the proxy checks the attestation against `<Team ID>.<bundle ID>` for each bundle ID in `IOS_BUNDLE_IDS`.
+
+### Serving several apps
+
+One proxy can serve any number of iOS and Android apps. List them, comma-separated, in `proxy/.env`:
+
+```bash
+IOS_BUNDLE_IDS=com.acme.shop,com.acme.driver
+ANDROID_PACKAGES=com.acme.shop,com.acme.driver
+```
+
+The single-app names `IOS_BUNDLE_ID` and `ANDROID_PACKAGE` still work. Each app token records which app earned it:
+
+- **iOS:** the proxy matches the App Attest proof against every listed bundle ID, so the app doesn't need to say which it is.
+- **Android:** the app sends its package as `X-Android-Identifier` when it asks for a token. Google decodes the Play Integrity token for that package, so an app can't claim another app's package.
+- **Debug tokens:** the app names itself with `X-iOS-Identifier` or `X-Android-Identifier`. An app not on either list gets `403 app_not_allowed`.
+
+All apps share one `CLIENT_ID`, and each still sends its own Woosmap key.
 
 ## 2. Run the iOS app
 
@@ -77,7 +94,7 @@ cp secrets.properties.example secrets.properties   # then set WOOSMAP_API_KEY
 ./gradlew installDebug                              # needs JDK 17+, e.g. Android Studio's bundled JDK
 ```
 
-A Woosmap key carries only one kind of restriction, so the Android app needs its own key, restricted to package `com.woosmap.app.woozies` and your signing SHA-1 (`./gradlew :app:signingReport` prints it).
+A Woosmap key carries only one kind of restriction, so the Android app needs its own key, restricted to package `com.woosmap.app.woozies` (listed in the proxy's `ANDROID_PACKAGES`) and your signing SHA-1 (`./gradlew :app:signingReport` prints it).
 
 **Emulator:** Play Integrity can't pass on an emulator, so debug builds there send the debug token instead. They reach the proxy at `http://10.0.2.2:8000`, the emulator's address for your Mac.
 
@@ -127,7 +144,7 @@ The Woozies app doesn't use Firebase, but the proxy supports it for apps that do
 ## Before going beyond a demo
 
 - **Treat the app's key as public:** it ships inside the app, so anyone can pull it out of the binary and call Woosmap directly with the bundle ID header, bypassing the proxy. Restrict it in the Woosmap Console to the iOS bundle ID and the products you use, and watch its usage.
-- **Mind the Team ID header:** the proxy accepts any Team ID the app sends, so attestation only proves the app is signed with *some* team for `IOS_BUNDLE_ID`. That holds as long as the bundle ID is registered to your team in your Apple Developer account, because Apple won't issue it to anyone else.
+- **Mind the Team ID header:** the proxy accepts any Team ID the app sends, so attestation only proves the app is signed with *some* team for a bundle ID in `IOS_BUNDLE_IDS`. That holds as long as the bundle ID is registered to your team in your Apple Developer account, because Apple won't issue it to anyone else.
 - **Turn off debug tokens:** leave `ATTEST_DEBUG_TOKENS` empty anywhere other than a developer machine.
 - **Use production builds:** App Store and TestFlight builds attest in the `production` environment. Set the entitlement to `production` and `IOS_ALLOW_DEVELOPMENT=false`.
 - **Keep the signing key stable:** set `ATTEST_SIGNING_KEY` (create one with `openssl ecparam -name prime256v1 -genkey -noout -out signing-key.pem`). Otherwise every restart invalidates issued tokens.

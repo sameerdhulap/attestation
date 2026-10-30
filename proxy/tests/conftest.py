@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import struct
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -181,8 +182,8 @@ class MockWoosmap:
 def make_settings(**overrides) -> ProxySettings:
     base = dict(
         client_id=CLIENT_ID,
-        ios_bundle_id=BUNDLE_ID,
-        android_package=BUNDLE_ID,
+        ios_bundle_ids=(BUNDLE_ID,),
+        android_packages=(BUNDLE_ID,),
         ios_allow_development=False,
         attest_mode=Mode.ENFORCE,
         debug_tokens=(DEBUG_TOKEN,),
@@ -228,8 +229,16 @@ def get_challenge(client) -> str:
     return resp.json()["challenge"]
 
 
-def register(client, device, team_id: str | None = TEAM_ID):
-    """Registers the device's App Attest key, sending team_id as X-Apple-Team-Id."""
+def token_claims(token: str) -> dict:
+    """The app token's claims, read without checking the signature."""
+    payload = token.split(".")[1]
+    return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+
+
+def register(
+    client, device, team_id: str | None = TEAM_ID, bundle_id: str = BUNDLE_ID
+):
+    """Registers the device's App Attest key for bundle_id, sending team_id as X-Apple-Team-Id."""
     challenge = get_challenge(client)
     headers = {**H, "X-Apple-Team-Id": team_id} if team_id is not None else H
     return client.post(
@@ -238,7 +247,7 @@ def register(client, device, team_id: str | None = TEAM_ID):
         json={
             "key_id": device.key_id,
             "challenge": challenge,
-            "attestation": device.attestation(challenge),
+            "attestation": device.attestation(challenge, app_id=f"{TEAM_ID}.{bundle_id}"),
         },
     )
 

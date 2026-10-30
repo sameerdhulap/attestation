@@ -16,6 +16,8 @@ class ProxyError(val status: Int, val code: String?) : Exception() {
                 "The proxy has Play Integrity turned off. Set PLAY_INTEGRITY_CREDENTIALS."
             "debug_token_invalid" ->
                 "The proxy didn't accept the emulator debug token. Add it to ATTEST_DEBUG_TOKENS."
+            "app_not_allowed", "play_integrity_wrong_app" ->
+                "The proxy doesn't serve this app. Add its package to ANDROID_PACKAGES."
             "upstream_auth_failed" ->
                 "Woosmap rejected the app's key. Check WOOSMAP_API_KEY in secrets.properties and its Android restriction."
             "woosmap_key_missing" ->
@@ -68,6 +70,8 @@ class ProxyApi(private val baseUrl: String = AppConfig.proxyBaseUrl) {
             connection.doOutput = true
             connection.setRequestProperty("Content-Type", "application/json")
             connection.setRequestProperty("X-Client-Id", AppConfig.CLIENT_ID)
+            // Tells a proxy serving several apps which one this is; Play Integrity is checked for it.
+            connection.setRequestProperty("X-Android-Identifier", BuildConfig.APPLICATION_ID)
             connection.outputStream.use { it.write(body.toString().toByteArray()) }
             JSONObject(connection.readBody())
         } finally {
