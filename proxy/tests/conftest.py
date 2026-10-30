@@ -1,9 +1,9 @@
 """Fixtures: proxy settings, a fake Apple App Attest authority and a mock Woosmap API."""
+
 from __future__ import annotations
 
 import base64
 import hashlib
-import json
 import struct
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -17,7 +17,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 from fastapi.testclient import TestClient
 
-from attestation.app_attest import AAGUID_DEVELOPMENT, AAGUID_PRODUCTION, NONCE_EXTENSION_OID
+from attestation.app_attest import AAGUID_PRODUCTION, NONCE_EXTENSION_OID
 from attestation.config import Mode
 from woozies_proxy.main import create_app
 from woozies_proxy.settings import ProxySettings
@@ -26,9 +26,10 @@ CLIENT_ID = "woozies-ios"
 TEAM_ID = "ABCDE12345"
 BUNDLE_ID = "com.woosmap.app.woozies"
 APP_ID = f"{TEAM_ID}.{BUNDLE_ID}"
-PRIVATE_KEY = "test-private-key"
+WOOSMAP_KEY = "test-app-key"
 DEBUG_TOKEN = "debug-123"
 H = {"X-Client-Id": CLIENT_ID}
+
 
 def _name(cn: str) -> x509.Name:
     return x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
@@ -36,10 +37,16 @@ def _name(cn: str) -> x509.Name:
 
 def _cert(subject, issuer, public_key, signing_key, ca: bool, extensions=()):
     now = datetime.now(timezone.utc)
-    builder = (x509.CertificateBuilder().subject_name(subject).issuer_name(issuer)
-               .public_key(public_key).serial_number(x509.random_serial_number())
-               .not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=30))
-               .add_extension(x509.BasicConstraints(ca=ca, path_length=None), critical=True))
+    builder = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(public_key)
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(days=1))
+        .not_valid_after(now + timedelta(days=30))
+        .add_extension(x509.BasicConstraints(ca=ca, path_length=None), critical=True)
+    )
     for ext in extensions:
         builder = builder.add_extension(ext, critical=False)
     return builder.sign(signing_key, hashes.SHA256())
@@ -59,50 +66,94 @@ def b64(data: bytes) -> str:
 @dataclass
 class FakeDevice:
     """One app install: a Secure Enclave key and its attestation."""
+
     authority: "FakeAppleAuthority"
     private_key: ec.EllipticCurvePrivateKey
     key_id: str
     counter: int = 0
 
-    def attestation(self, challenge: str, app_id: str = APP_ID, aaguid: bytes = AAGUID_PRODUCTION,
-                    key_id_override: bytes | None = None) -> str:
+    def attestation(
+        self,
+        challenge: str,
+        app_id: str = APP_ID,
+        aaguid: bytes = AAGUID_PRODUCTION,
+        key_id_override: bytes | None = None,
+    ) -> str:
         key_id_bytes = base64.b64decode(self.key_id)
         cred_id = key_id_override or key_id_bytes
-        auth_data = (hashlib.sha256(app_id.encode()).digest() + bytes([0x40]) + struct.pack(">I", 0)
-                     + aaguid + struct.pack(">H", len(cred_id)) + cred_id)
-        nonce = hashlib.sha256(auth_data + hashlib.sha256(challenge.encode()).digest()).digest()
-        leaf = _cert(_name(self.key_id), self.authority.intermediate.subject,
-                     self.private_key.public_key(), self.authority.intermediate_key, ca=False,
-                     extensions=[_nonce_extension(nonce)])
+        auth_data = (
+            hashlib.sha256(app_id.encode()).digest()
+            + bytes([0x40])
+            + struct.pack(">I", 0)
+            + aaguid
+            + struct.pack(">H", len(cred_id))
+            + cred_id
+        )
+        nonce = hashlib.sha256(
+            auth_data + hashlib.sha256(challenge.encode()).digest()
+        ).digest()
+        leaf = _cert(
+            _name(self.key_id),
+            self.authority.intermediate.subject,
+            self.private_key.public_key(),
+            self.authority.intermediate_key,
+            ca=False,
+            extensions=[_nonce_extension(nonce)],
+        )
         der = lambda c: c.public_bytes(serialization.Encoding.DER)  # noqa: E731
-        obj = {"fmt": "apple-appattest", "authData": auth_data,
-               "attStmt": {"x5c": [der(leaf), der(self.authority.intermediate)], "receipt": b"r"}}
+        obj = {
+            "fmt": "apple-appattest",
+            "authData": auth_data,
+            "attStmt": {
+                "x5c": [der(leaf), der(self.authority.intermediate)],
+                "receipt": b"r",
+            },
+        }
         return b64(cbor2.dumps(obj))
 
-    def assertion(self, challenge: str, app_id: str = APP_ID, counter: int | None = None) -> str:
+    def assertion(
+        self, challenge: str, app_id: str = APP_ID, counter: int | None = None
+    ) -> str:
         self.counter = self.counter + 1 if counter is None else counter
-        auth_data = (hashlib.sha256(app_id.encode()).digest() + bytes([0x00])
-                     + struct.pack(">I", self.counter))
-        nonce = hashlib.sha256(auth_data + hashlib.sha256(challenge.encode()).digest()).digest()
+        auth_data = (
+            hashlib.sha256(app_id.encode()).digest()
+            + bytes([0x00])
+            + struct.pack(">I", self.counter)
+        )
+        nonce = hashlib.sha256(
+            auth_data + hashlib.sha256(challenge.encode()).digest()
+        ).digest()
         signature = self.private_key.sign(nonce, ec.ECDSA(hashes.SHA256()))
-        return b64(cbor2.dumps({"signature": signature, "authenticatorData": auth_data}))
+        return b64(
+            cbor2.dumps({"signature": signature, "authenticatorData": auth_data})
+        )
 
 
 class FakeAppleAuthority:
     def __init__(self):
         self.root_key = ec.generate_private_key(ec.SECP384R1())
-        self.root = _cert(_name("Fake App Attestation Root CA"), _name("Fake App Attestation Root CA"),
-                          self.root_key.public_key(), self.root_key, ca=True)
+        self.root = _cert(
+            _name("Fake App Attestation Root CA"),
+            _name("Fake App Attestation Root CA"),
+            self.root_key.public_key(),
+            self.root_key,
+            ca=True,
+        )
         self.intermediate_key = ec.generate_private_key(ec.SECP384R1())
-        self.intermediate = _cert(_name("Fake App Attestation CA 1"), self.root.subject,
-                                  self.intermediate_key.public_key(), self.root_key, ca=True)
+        self.intermediate = _cert(
+            _name("Fake App Attestation CA 1"),
+            self.root.subject,
+            self.intermediate_key.public_key(),
+            self.root_key,
+            ca=True,
+        )
 
     def new_device(self) -> FakeDevice:
         key = ec.generate_private_key(ec.SECP256R1())
-        point = key.public_key().public_bytes(serialization.Encoding.X962,
-                                              serialization.PublicFormat.UncompressedPoint)
+        point = key.public_key().public_bytes(
+            serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint
+        )
         return FakeDevice(self, key, b64(hashlib.sha256(point).digest()))
-
 
 
 class MockWoosmap:
@@ -111,8 +162,16 @@ class MockWoosmap:
     def __init__(self):
         self.requests: list[httpx.Request] = []
         self.status = 200
-        self.body = {"results": [{"public_id": "abc", "name": "Louvre", "types": ["point_of_interest"],
-                                  "geometry": {"location": {"lat": 48.8606, "lng": 2.3376}}}]}
+        self.body = {
+            "results": [
+                {
+                    "public_id": "abc",
+                    "name": "Louvre",
+                    "types": ["point_of_interest"],
+                    "geometry": {"location": {"lat": 48.8606, "lng": 2.3376}},
+                }
+            ]
+        }
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -120,8 +179,12 @@ class MockWoosmap:
 
 
 def make_settings(**overrides) -> ProxySettings:
-    base = dict(woosmap_private_key=PRIVATE_KEY, apple_team_id=TEAM_ID, ios_allow_development=False,
-                attest_mode=Mode.ENFORCE, debug_tokens=(DEBUG_TOKEN,))
+    base = dict(
+        apple_team_id=TEAM_ID,
+        ios_allow_development=False,
+        attest_mode=Mode.ENFORCE,
+        debug_tokens=(DEBUG_TOKEN,),
+    )
     base.update(overrides)
     return ProxySettings(**base)
 
@@ -139,10 +202,14 @@ def woosmap():
 @pytest.fixture
 def make_client(apple, woosmap):
     def _make(firebase_verifier=None, **overrides):
-        app = create_app(make_settings(**overrides), apple_root=apple.root,
-                         upstream_transport=httpx.MockTransport(woosmap.handler),
-                         firebase_verifier=firebase_verifier)
+        app = create_app(
+            make_settings(**overrides),
+            apple_root=apple.root,
+            upstream_transport=httpx.MockTransport(woosmap.handler),
+            firebase_verifier=firebase_verifier,
+        )
         return TestClient(app)
+
     return _make
 
 
@@ -160,8 +227,14 @@ def get_challenge(client) -> str:
 
 def attest(client, device) -> str:
     challenge = get_challenge(client)
-    resp = client.post("/attest/ios/register", headers=H, json={
-        "key_id": device.key_id, "challenge": challenge,
-        "attestation": device.attestation(challenge)})
+    resp = client.post(
+        "/attest/ios/register",
+        headers=H,
+        json={
+            "key_id": device.key_id,
+            "challenge": challenge,
+            "attestation": device.attestation(challenge),
+        },
+    )
     assert resp.status_code == 200, resp.text
     return resp.json()["token"]

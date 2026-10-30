@@ -7,6 +7,12 @@ enum AppConfig {
         return URL(string: value ?? "http://localhost:8000")!
     }()
 
+    /// Woosmap key, forwarded by the proxy as X-Api-Key. Set `WOOSMAP_API_KEY` in Config/Secrets.xcconfig.
+    static let woosmapAPIKey: String? = {
+        let value = Bundle.main.object(forInfoDictionaryKey: "WoosmapAPIKey") as? String
+        return value?.isEmpty == false ? value : nil
+    }()
+
     /// Identifies this app to the proxy. Not a secret; it must match CLIENT_ID in the proxy.
     static let clientId = "woozies-ios"
 

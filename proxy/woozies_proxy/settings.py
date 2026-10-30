@@ -1,4 +1,5 @@
 """Proxy settings, read from environment variables (and `.env` if present)."""
+
 from __future__ import annotations
 
 import os
@@ -27,12 +28,15 @@ def _csv(value: str | None) -> tuple[str, ...]:
 
 
 def _bool(value: str | None, default: bool = False) -> bool:
-    return default if value is None else value.strip().lower() in ("1", "true", "yes", "on")
+    return (
+        default
+        if value is None
+        else value.strip().lower() in ("1", "true", "yes", "on")
+    )
 
 
 @dataclass(frozen=True)
 class ProxySettings:
-    woosmap_private_key: str
     woosmap_api_base: str = "https://api.woosmap.com"
     client_id: str = "woozies-ios"
     ios_bundle_id: str = "com.woosmap.app.woozies"
@@ -53,7 +57,9 @@ class ProxySettings:
 
     @property
     def ios_app_id(self) -> str | None:
-        return f"{self.apple_team_id}.{self.ios_bundle_id}" if self.apple_team_id else None
+        return (
+            f"{self.apple_team_id}.{self.ios_bundle_id}" if self.apple_team_id else None
+        )
 
     def key_config(self) -> KeyConfig:
         """The attestation rules for the one client this proxy serves."""
@@ -72,12 +78,8 @@ class ProxySettings:
     def from_env(cls, env_file: Path | None = PROXY_ROOT / ".env") -> "ProxySettings":
         if env_file:
             _load_dotenv(env_file)
-        private_key = os.getenv("WOOSMAP_PRIVATE_KEY")
-        if not private_key:
-            raise RuntimeError("WOOSMAP_PRIVATE_KEY is not set (see .env.example)")
         default_root = PROXY_ROOT / "certs" / "Apple_App_Attestation_Root_CA.pem"
         return cls(
-            woosmap_private_key=private_key,
             woosmap_api_base=os.getenv("WOOSMAP_API_BASE", cls.woosmap_api_base),
             client_id=os.getenv("CLIENT_ID", cls.client_id),
             ios_bundle_id=os.getenv("IOS_BUNDLE_ID", cls.ios_bundle_id),

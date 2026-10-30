@@ -64,7 +64,7 @@ struct ContentView: View {
                 } header: {
                     Text("App verification")
                 } footer: {
-                    Text("Requests go through the attestation proxy at \(AppConfig.proxyBaseURL.absoluteString). The app holds no Woosmap key.")
+                    Text("Requests go through the attestation proxy at \(AppConfig.proxyBaseURL.absoluteString). Woosmap only answers once the proxy has verified the app.")
                 }
             }
             .navigationTitle("Woozies")

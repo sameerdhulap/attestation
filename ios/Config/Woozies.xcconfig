@@ -1,0 +1,5 @@
+// Build settings shared by Debug and Release.
+// The Woosmap key lives in Secrets.xcconfig (git-ignored). Copy Secrets.xcconfig.example to start.
+WOOSMAP_API_KEY =
+
+#include? "Secrets.xcconfig"

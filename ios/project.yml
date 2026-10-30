@@ -12,6 +12,9 @@ targets:
     type: application
     platform: iOS
     sources: [Woozies]
+    configFiles:
+      Debug: Config/Woozies.xcconfig
+      Release: Config/Woozies.xcconfig
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.woosmap.app.woozies
@@ -35,3 +38,5 @@ targets:
           NSAllowsLocalNetworking: true
         # Proxy address. Simulator: http://localhost:8000. Device: http://<your-mac-ip>:8000
         WoosmapProxyBaseURL: http://localhost:8000
+        # Woosmap key, sent to the proxy as X-Api-Key. Set in Config/Secrets.xcconfig
+        WoosmapAPIKey: $(WOOSMAP_API_KEY)

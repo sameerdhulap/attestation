@@ -14,7 +14,9 @@ struct ProxyError: LocalizedError {
         case "debug_token_invalid":
             return "The proxy didn't accept the simulator debug token. Add it to ATTEST_DEBUG_TOKENS."
         case "upstream_auth_failed":
-            return "The proxy's Woosmap key was rejected. Check WOOSMAP_PRIVATE_KEY and its restrictions."
+            return "Woosmap rejected the app's key. Check WOOSMAP_API_KEY in Secrets.xcconfig and its iOS restrictions."
+        case "woosmap_key_missing":
+            return "The app has no Woosmap key. Set WOOSMAP_API_KEY in Config/Secrets.xcconfig and rebuild."
         case "upstream_unavailable":
             return "The proxy couldn't reach Woosmap. Check its network connection."
         default:

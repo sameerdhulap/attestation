@@ -28,6 +28,7 @@ struct LocalitiesClient {
         components.queryItems = query
         var request = URLRequest(url: components.url!)
         request.setValue(token, forHTTPHeaderField: "X-Woosmap-App-Token")
+        request.setValue(AppConfig.woosmapAPIKey, forHTTPHeaderField: "X-Api-Key")
         request.setValue(AppConfig.clientId, forHTTPHeaderField: "X-Client-Id")
         request.setValue(Bundle.main.bundleIdentifier, forHTTPHeaderField: "X-iOS-Identifier")
         request.setValue(AppConfig.appVersion, forHTTPHeaderField: "X-App-Version")
