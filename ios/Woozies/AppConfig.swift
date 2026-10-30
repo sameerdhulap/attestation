@@ -13,6 +13,12 @@ enum AppConfig {
         return value?.isEmpty == false ? value : nil
     }()
 
+    /// Apple Team ID, sent as X-Apple-Team-Id when registering an App Attest key. Comes from DEVELOPMENT_TEAM.
+    static let appleTeamID: String? = {
+        let value = Bundle.main.object(forInfoDictionaryKey: "AppleTeamID") as? String
+        return value?.isEmpty == false ? value : nil
+    }()
+
     /// Identifies this app to the proxy. Not a secret; it must match CLIENT_ID in the proxy.
     static let clientId = "woozies-ios"
 

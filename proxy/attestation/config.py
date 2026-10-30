@@ -1,4 +1,5 @@
 """Service settings and per-key attestation configuration."""
+
 from __future__ import annotations
 
 import base64
@@ -60,6 +61,8 @@ class KeyConfig:
     mode: Mode = Mode.OFF
     # iOS: App IDs in the form "TEAMID.bundle.identifier"
     ios_app_ids: tuple[str, ...] = ()
+    # iOS bundle IDs allowed when the team ID is supplied per request instead
+    ios_bundle_ids: tuple[str, ...] = ()
     ios_allow_development: bool = False
     # Android
     android_packages: tuple[str, ...] = ()
@@ -87,13 +90,22 @@ class KeyConfig:
     def allowed_apps(self) -> frozenset[str]:
         """Every app identifier a token for this key may carry."""
         bundle_ids = {app_id.split(".", 1)[1] for app_id in self.ios_app_ids}
-        return frozenset(bundle_ids | set(self.android_packages) | set(self.firebase_app_ids))
+        bundle_ids |= set(self.ios_bundle_ids)
+        return frozenset(
+            bundle_ids | set(self.android_packages) | set(self.firebase_app_ids)
+        )
 
     @classmethod
     def from_dict(cls, data: dict) -> "KeyConfig":
         data = dict(data)
         data["mode"] = Mode(data.get("mode", "off"))
-        for name in ("ios_app_ids", "android_packages", "android_cert_sha256", "firebase_app_ids"):
+        for name in (
+            "ios_app_ids",
+            "ios_bundle_ids",
+            "android_packages",
+            "android_cert_sha256",
+            "firebase_app_ids",
+        ):
             data[name] = tuple(data.get(name, ()))
         return cls(**data)
 

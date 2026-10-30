@@ -10,7 +10,9 @@ struct ProxyError: LocalizedError {
         case "app_token_missing", "app_token_invalid", "app_token_expired", "app_token_revoked":
             return "The app couldn't prove it's genuine (\(code!)). Try again."
         case "app_attest_not_configured":
-            return "The proxy has App Attest turned off. Set APPLE_TEAM_ID and add Apple's root certificate."
+            return "The proxy has App Attest turned off. Add Apple's root certificate to its certs folder."
+        case "apple_team_id_missing", "apple_team_id_invalid":
+            return "The app has no valid Team ID. Set DEVELOPMENT_TEAM in project.yml and rebuild."
         case "debug_token_invalid":
             return "The proxy didn't accept the simulator debug token. Add it to ATTEST_DEBUG_TOKENS."
         case "upstream_auth_failed":
@@ -56,7 +58,7 @@ struct ProxyAPI {
     func registerKey(keyId: String, attestation: Data, challenge: String) async throws -> AppToken {
         try await tokenRequest("attest/ios/register", body: [
             "key_id": keyId, "attestation": attestation.base64EncodedString(), "challenge": challenge,
-        ])
+        ], headers: ["X-Apple-Team-Id": AppConfig.appleTeamID])
     }
 
     func refreshToken(keyId: String, assertion: Data, challenge: String) async throws -> AppToken {
@@ -69,19 +71,22 @@ struct ProxyAPI {
         try await tokenRequest("attest/debug/token", body: ["debug_token": token])
     }
 
-    private func tokenRequest(_ path: String, body: [String: String]) async throws -> AppToken {
+    private func tokenRequest(_ path: String, body: [String: String],
+                              headers: [String: String?] = [:]) async throws -> AppToken {
         struct Response: Decodable { let token: String; let expires_in: Int }
-        let response: Response = try await post(path, body: body)
+        let response: Response = try await post(path, body: body, headers: headers)
         // Refresh at 80% of the lifetime so calls never go out with an expiring token.
         let refreshAfter = Date().addingTimeInterval(Double(response.expires_in) * 0.8)
         return AppToken(value: response.token, refreshAfter: refreshAfter)
     }
 
-    private func post<T: Decodable>(_ path: String, body: [String: String]) async throws -> T {
+    private func post<T: Decodable>(_ path: String, body: [String: String],
+                                    headers: [String: String?] = [:]) async throws -> T {
         var request = URLRequest(url: baseURL.appendingPathComponent(path))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(clientId, forHTTPHeaderField: "X-Client-Id")
+        for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
         request.httpBody = try JSONEncoder().encode(body)
         let (data, response) = try await session.data(for: request)
         try ProxyError.check(data, response)

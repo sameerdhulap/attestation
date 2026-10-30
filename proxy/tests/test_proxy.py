@@ -1,7 +1,15 @@
 from urllib.parse import parse_qsl
 
 from attestation.config import Mode
-from conftest import BUNDLE_ID, DEBUG_TOKEN, H, WOOSMAP_KEY, attest, get_challenge
+from conftest import (
+    BUNDLE_ID,
+    DEBUG_TOKEN,
+    H,
+    WOOSMAP_KEY,
+    attest,
+    get_challenge,
+    register,
+)
 
 NEARBY = (
     "/localities/nearby?types=point_of_interest&location=48.863469,2.330941&radius=1000"
@@ -121,20 +129,20 @@ def test_ios_refresh_with_assertion(client, apple):
     assert call(client, resp.json()["token"]).status_code == 200
 
 
-def test_wrong_team_id_rejected(make_client, apple):
-    with make_client(apple_team_id="ZZZZZ99999") as c:
-        challenge = get_challenge(c)
-        device = apple.new_device()
-        resp = c.post(
-            "/attest/ios/register",
-            headers=H,
-            json={
-                "key_id": device.key_id,
-                "challenge": challenge,
-                "attestation": device.attestation(challenge),
-            },
-        )
-        assert resp.status_code == 401
+def test_wrong_team_id_rejected(client, apple):
+    assert register(client, apple.new_device(), team_id="ZZZZZ99999").status_code == 401
+
+
+def test_missing_team_id_rejected(client, apple):
+    resp = register(client, apple.new_device(), team_id=None)
+    assert resp.status_code == 400
+    assert resp.json() == {"error": "apple_team_id_missing"}
+
+
+def test_malformed_team_id_rejected(client, apple):
+    resp = register(client, apple.new_device(), team_id="not a team")
+    assert resp.status_code == 400
+    assert resp.json() == {"error": "apple_team_id_invalid"}
 
 
 def test_upstream_auth_error_mapped_to_502(client, apple, woosmap):

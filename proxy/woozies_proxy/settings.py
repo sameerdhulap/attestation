@@ -40,7 +40,6 @@ class ProxySettings:
     woosmap_api_base: str = "https://api.woosmap.com"
     client_id: str = "woozies-ios"
     ios_bundle_id: str = "com.woosmap.app.woozies"
-    apple_team_id: str | None = None
     ios_allow_development: bool = True
     attest_mode: Mode = Mode.ENFORCE
     apple_root_ca_path: str | None = None
@@ -55,19 +54,13 @@ class ProxySettings:
     upstream_timeout_seconds: float = 10.0
     extra: dict = field(default_factory=dict)
 
-    @property
-    def ios_app_id(self) -> str | None:
-        return (
-            f"{self.apple_team_id}.{self.ios_bundle_id}" if self.apple_team_id else None
-        )
-
     def key_config(self) -> KeyConfig:
         """The attestation rules for the one client this proxy serves."""
         return KeyConfig(
             api_key=self.client_id,
             project_id=self.client_id,
             mode=self.attest_mode,
-            ios_app_ids=(self.ios_app_id,) if self.ios_app_id else (),
+            ios_bundle_ids=(self.ios_bundle_id,),
             ios_allow_development=self.ios_allow_development,
             firebase_project_number=self.firebase_project_number,
             firebase_app_ids=self.firebase_app_ids,
@@ -83,7 +76,6 @@ class ProxySettings:
             woosmap_api_base=os.getenv("WOOSMAP_API_BASE", cls.woosmap_api_base),
             client_id=os.getenv("CLIENT_ID", cls.client_id),
             ios_bundle_id=os.getenv("IOS_BUNDLE_ID", cls.ios_bundle_id),
-            apple_team_id=os.getenv("APPLE_TEAM_ID") or None,
             ios_allow_development=_bool(os.getenv("IOS_ALLOW_DEVELOPMENT"), True),
             attest_mode=Mode(os.getenv("ATTEST_MODE", "enforce")),
             apple_root_ca_path=os.getenv("APPLE_ROOT_CA_PATH")

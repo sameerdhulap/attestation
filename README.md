@@ -8,6 +8,7 @@ The app proves it's the genuine, unmodified Woozies app using Apple App Attest. 
 iOS app (com.woosmap.app.woozies)            Python proxy                         Woosmap
   1. POST /attest/challenge  ─────────────▶  issues a one-time challenge
   2. App Attest proof        ─────────────▶  verifies with Apple's root CA
+     + X-Apple-Team-Id                        against TEAMID.bundle ID
                               ◀─────────────  short-lived app token
   3. GET /localities/nearby  ─────────────▶  checks token, keeps allowed params,
      + X-Woosmap-App-Token                    forwards X-Api-Key and
@@ -21,7 +22,7 @@ iOS app (com.woosmap.app.woozies)            Python proxy                       
 | --- | --- |
 | `proxy/` | FastAPI proxy: App Attest verification, an optional Firebase App Check path, a simulator debug-token path, and the Localities forwarding |
 | `proxy/attestation/` | The attestation core from the base implementation (App Attest, tokens, gateway check) |
-| `proxy/tests/` | 18 tests, including a fake Apple authority so App Attest runs without a device |
+| `proxy/tests/` | 20 tests, including a fake Apple authority so App Attest runs without a device |
 | `ios/` | SwiftUI app plus an XcodeGen `project.yml` |
 
 ## 1. Run the proxy
@@ -30,7 +31,7 @@ iOS app (com.woosmap.app.woozies)            Python proxy                       
 cd proxy
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
-python -m pytest -q                      # optional: 18 tests
+python -m pytest -q                      # optional: 20 tests
 uvicorn woozies_proxy.main:build_app --factory --host 0.0.0.0 --port 8000 --reload
 ```
 
@@ -40,9 +41,10 @@ Check the setup at `http://localhost:8000/health`. It reports whether App Attest
 
 **To turn on App Attest for real devices:**
 
-1. Set `APPLE_TEAM_ID` in `proxy/.env` to your Apple Developer Team ID.
-2. Download Apple's App Attestation Root CA from [Apple's Certificate Authority page](https://www.apple.com/certificateauthority/) and save it as `proxy/certs/Apple_App_Attestation_Root_CA.pem`.
-3. Restart the proxy. `/health` should now show `"app_attest": true`.
+1. Download Apple's App Attestation Root CA from [Apple's Certificate Authority page](https://www.apple.com/certificateauthority/) and save it as `proxy/certs/Apple_App_Attestation_Root_CA.pem`.
+2. Restart the proxy. `/health` should now show `"app_attest": true`.
+
+The proxy doesn't need your Team ID. The app sends it as `X-Apple-Team-Id` when it registers its App Attest key, and the proxy checks the attestation against `<Team ID>.<IOS_BUNDLE_ID>`.
 
 ## 2. Run the iOS app
 
@@ -56,7 +58,7 @@ open Woozies.xcodeproj
 
 `Config/Secrets.xcconfig` is git-ignored. The key must allow the bundle ID `com.woosmap.app.woozies`, because the app sends it as `X-iOS-Identifier`.
 
-In Xcode, open the Woozies target's *Signing & Capabilities*, pick your team, and check that the *App Attest* capability is listed. XcodeGen adds it from `project.yml` with the `development` environment.
+Set `DEVELOPMENT_TEAM` in `project.yml` to your Team ID before running `xcodegen`; the app reads it from Info.plist (`AppleTeamID`). In Xcode, open the Woozies target's *Signing & Capabilities*, check your team is selected, and check that the *App Attest* capability is listed. XcodeGen adds it from `project.yml` with the `development` environment.
 
 If you'd rather not use XcodeGen, create a new SwiftUI iOS app named Woozies with the bundle ID `com.woosmap.app.woozies`, drag in the files from `ios/Woozies`, add the App Attest capability, and add `WoosmapProxyBaseURL`, `WoosmapAPIKey` and `NSAppTransportSecurity → NSAllowsLocalNetworking = YES` to Info.plist.
 
@@ -98,6 +100,7 @@ The Woozies app doesn't use Firebase, but the proxy supports it for apps that do
 ## Before going beyond a demo
 
 - **Treat the app's key as public:** it ships inside the app, so anyone can pull it out of the binary and call Woosmap directly with the bundle ID header, bypassing the proxy. Restrict it in the Woosmap Console to the iOS bundle ID and the products you use, and watch its usage.
+- **Mind the Team ID header:** the proxy accepts any Team ID the app sends, so attestation only proves the app is signed with *some* team for `IOS_BUNDLE_ID`. That holds as long as the bundle ID is registered to your team in your Apple Developer account, because Apple won't issue it to anyone else.
 - **Turn off debug tokens:** leave `ATTEST_DEBUG_TOKENS` empty anywhere other than a developer machine.
 - **Use production builds:** App Store and TestFlight builds attest in the `production` environment. Set the entitlement to `production` and `IOS_ALLOW_DEVELOPMENT=false`.
 - **Keep the signing key stable:** set `ATTEST_SIGNING_KEY` (create one with `openssl ecparam -name prime256v1 -genkey -noout -out signing-key.pem`). Otherwise every restart invalidates issued tokens.

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from contextlib import asynccontextmanager
 
 import httpx
@@ -42,6 +43,8 @@ from .settings import ProxySettings
 log = logging.getLogger("woozies_proxy")
 
 CLIENT_HEADER = "X-Client-Id"
+# Apple Team IDs are 10 uppercase letters or digits.
+TEAM_ID_PATTERN = re.compile(r"[A-Z0-9]{10}")
 # Only these query parameters reach Woosmap; anything else (including a key or
 # private_key query parameter) is dropped. The key travels in the X-Api-Key header.
 NEARBY_PARAMS = ("types", "location", "radius", "page", "limit", "excluded_types")
@@ -104,13 +107,9 @@ def create_app(
 
     if apple_root is None and settings.apple_root_ca_path:
         apple_root = load_apple_root(settings.apple_root_ca_path)
-    app_attest = (
-        AppAttestVerifier(apple_root) if apple_root and settings.ios_app_id else None
-    )
+    app_attest = AppAttestVerifier(apple_root) if apple_root else None
     if app_attest is None:
-        log.warning(
-            "App Attest disabled: set APPLE_TEAM_ID and add Apple's root CA to certs/"
-        )
+        log.warning("App Attest disabled: add Apple's root CA to certs/")
 
     if firebase_verifier is None and settings.firebase_project_number:
         firebase_verifier = FirebaseAppCheckVerifier()
@@ -146,17 +145,26 @@ def create_app(
         return {"challenge": value, "expires_in": ttl}
 
     @app.post("/attest/ios/register")
-    def ios_register(body: IosRegisterBody, x_client_id: str = Header(...)):
+    def ios_register(
+        body: IosRegisterBody,
+        x_client_id: str = Header(...),
+        x_apple_team_id: str | None = Header(None),
+    ):
         cfg = client_for(x_client_id)
         if app_attest is None:
             raise AttestationError("app_attest_not_configured", status=503)
+        # The app sends its Team ID; the attestation must match TEAMID.<configured bundle ID>.
+        if not x_apple_team_id:
+            raise AttestationError("apple_team_id_missing", status=400)
+        if not TEAM_ID_PATTERN.fullmatch(x_apple_team_id):
+            raise AttestationError("apple_team_id_invalid", status=400)
         challenges.consume(body.challenge, x_client_id)
         record = app_attest.verify_attestation(
             key_id=body.key_id,
             attestation_b64=body.attestation,
             client_data=body.challenge.encode(),
             api_key=x_client_id,
-            allowed_app_ids=cfg.ios_app_ids,
+            allowed_app_ids=(f"{x_apple_team_id}.{settings.ios_bundle_id}",),
             allow_development=cfg.ios_allow_development,
         )
         store.save_ios_key(record)

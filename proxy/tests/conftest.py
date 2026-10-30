@@ -180,7 +180,6 @@ class MockWoosmap:
 
 def make_settings(**overrides) -> ProxySettings:
     base = dict(
-        apple_team_id=TEAM_ID,
         ios_allow_development=False,
         attest_mode=Mode.ENFORCE,
         debug_tokens=(DEBUG_TOKEN,),
@@ -225,16 +224,22 @@ def get_challenge(client) -> str:
     return resp.json()["challenge"]
 
 
-def attest(client, device) -> str:
+def register(client, device, team_id: str | None = TEAM_ID):
+    """Registers the device's App Attest key, sending team_id as X-Apple-Team-Id."""
     challenge = get_challenge(client)
-    resp = client.post(
+    headers = {**H, "X-Apple-Team-Id": team_id} if team_id is not None else H
+    return client.post(
         "/attest/ios/register",
-        headers=H,
+        headers=headers,
         json={
             "key_id": device.key_id,
             "challenge": challenge,
             "attestation": device.attestation(challenge),
         },
     )
+
+
+def attest(client, device) -> str:
+    resp = register(client, device)
     assert resp.status_code == 200, resp.text
     return resp.json()["token"]
