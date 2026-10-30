@@ -2,7 +2,7 @@
 
 This example shows how an iOS app can call the Localities Nearby API through a proxy that only answers the genuine app.
 
-The app proves it's the genuine, unmodified Woozies app using Apple App Attest. A small Python proxy verifies that proof, then forwards the call, with the Woosmap key (`X-Api-Key`) and bundle ID (`X-iOS-Identifier`) the app sent, to `https://api.woosmap.com/localities/nearby`. The proxy holds no Woosmap key. Calling the proxy with copied headers gets an attacker nothing, because it only answers apps holding a valid app token, and only App Attest can produce one.
+The app proves it's the genuine, unmodified Woozies app using Apple App Attest. A small Python proxy verifies that proof, then forwards the call, with the Woosmap key (`X-Api-Key`) and bundle ID (`X-iOS-Identifier`) the app sent, to `https://api.woosmap.com/localities/nearby`. Other Woosmap APIs can go through the same proxy once they're added to its allow-list. The proxy holds no Woosmap key. Calling the proxy with copied headers gets an attacker nothing, because it only answers apps holding a valid app token, and only App Attest can produce one.
 
 ```
 iOS app (com.woosmap.app.woozies)            Python proxy                         Woosmap
@@ -10,7 +10,7 @@ iOS app (com.woosmap.app.woozies)            Python proxy                       
   2. App Attest proof        ─────────────▶  verifies with Apple's root CA
      + X-Apple-Team-Id                        against TEAMID.bundle ID
                               ◀─────────────  short-lived app token
-  3. GET /localities/nearby  ─────────────▶  checks token, keeps allowed params,
+  3. GET /localities/nearby  ─────────────▶  checks token and ALLOWED_APIS,
      + X-Woosmap-App-Token                    forwards X-Api-Key and
      + X-Api-Key, X-iOS-Identifier            X-iOS-Identifier              ──▶  /localities/nearby
                               ◀─────────────  passes the result back         ◀──
@@ -20,9 +20,9 @@ iOS app (com.woosmap.app.woozies)            Python proxy                       
 
 | Folder | Contents |
 | --- | --- |
-| `proxy/` | FastAPI proxy: App Attest verification, an optional Firebase App Check path, a simulator debug-token path, and the Localities forwarding |
+| `proxy/` | FastAPI proxy: App Attest verification, an optional Firebase App Check path, a simulator debug-token path, and allow-listed Woosmap API forwarding |
 | `proxy/attestation/` | The attestation core from the base implementation (App Attest, tokens, gateway check) |
-| `proxy/tests/` | 20 tests, including a fake Apple authority so App Attest runs without a device |
+| `proxy/tests/` | 25 tests, including a fake Apple authority so App Attest runs without a device |
 | `ios/` | SwiftUI app plus an XcodeGen `project.yml` |
 
 ## 1. Run the proxy
@@ -31,7 +31,7 @@ iOS app (com.woosmap.app.woozies)            Python proxy                       
 cd proxy
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
-python -m pytest -q                      # optional: 20 tests
+python -m pytest -q                      # optional: 25 tests
 uvicorn woozies_proxy.main:build_app --factory --host 0.0.0.0 --port 8000 --reload
 ```
 
@@ -83,13 +83,16 @@ You'll get `401 {"error":"app_token_missing"}`. Woosmap is never called.
 
 ## How the proxy handles a call
 
-For `GET /localities/nearby`, the proxy does the following:
+The proxy forwards `GET` and `POST` calls on any Woosmap API path listed in `ALLOWED_APIS` to the same path on `https://api.woosmap.com`. By default that's `localities/autocomplete`, `localities/details`, `localities/geocode` and `localities/nearby`. To serve more, set a comma-separated list in `.env`, for example `ALLOWED_APIS=localities/nearby,distance/route/json`. The list replaces the default. Your Woosmap key must have those products enabled.
+
+For each call, the proxy does the following:
 
 1. It checks `X-Woosmap-App-Token`: the signature, expiry, which client it's bound to, and the deny list. In `enforce` mode, anything invalid gets a 401 with a code such as `app_token_expired`. The app refreshes once on these codes and retries.
-2. It captures the app headers `X-Client-Id`, `X-iOS-Identifier`, `X-App-Version` and `User-Agent`, plus the token's claims, in the log.
-3. It forwards only the documented query parameters: `types`, `location`, `radius`, `page`, `limit` and `excluded_types`. Anything else, including a `key` or `private_key` a caller tries to slip in, is dropped and logged.
-4. It calls Woosmap with the app's `X-Api-Key` and `X-iOS-Identifier`, passing on `Accept-Language` if present. If either header is missing, it returns `400 woosmap_key_missing` or `400 ios_identifier_missing` instead.
-5. It returns Woosmap's status and JSON unchanged, with one exception. A 401 or 403 from Woosmap means the app's key is wrong or restricted, so it becomes `502 upstream_auth_failed`. That way the app never confuses it with its own token being rejected.
+2. It checks the path is in `ALLOWED_APIS`, matching exactly. Any other path gets `404 api_not_allowed`, and Woosmap is never called.
+3. It captures the app headers `X-Client-Id`, `X-iOS-Identifier`, `X-App-Version` and `User-Agent`, plus the token's claims, in the log.
+4. It forwards the query string, except any `key` or `private_key` parameter, which is dropped and logged. For `POST`, it forwards the body and `Content-Type`.
+5. It calls Woosmap with the app's `X-Api-Key` and `X-iOS-Identifier`, passing on `Accept-Language` if present. If either header is missing, it returns `400 woosmap_key_missing` or `400 ios_identifier_missing` instead.
+6. It returns Woosmap's status and JSON unchanged, with one exception. A 401 or 403 from Woosmap means the app's key is wrong or restricted, so it becomes `502 upstream_auth_failed`. That way the app never confuses it with its own token being rejected.
 
 `ATTEST_MODE` controls step 1: `enforce` rejects, `monitor` forwards but logs unverified calls, and `off` skips the check.
 

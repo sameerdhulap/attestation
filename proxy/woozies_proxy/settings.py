@@ -9,6 +9,13 @@ from pathlib import Path
 from attestation.config import KeyConfig, Mode
 
 PROXY_ROOT = Path(__file__).resolve().parent.parent
+# Woosmap API paths the proxy serves unless ALLOWED_APIS overrides them.
+DEFAULT_ALLOWED_APIS = (
+    "localities/autocomplete",
+    "localities/details",
+    "localities/geocode",
+    "localities/nearby",
+)
 
 
 def _load_dotenv(path: Path) -> None:
@@ -52,6 +59,7 @@ class ProxySettings:
     firebase_project_number: str | None = None
     firebase_app_ids: tuple[str, ...] = ()
     upstream_timeout_seconds: float = 10.0
+    allowed_apis: tuple[str, ...] = DEFAULT_ALLOWED_APIS
     extra: dict = field(default_factory=dict)
 
     def key_config(self) -> KeyConfig:
@@ -86,4 +94,6 @@ class ProxySettings:
             debug_tokens=_csv(os.getenv("ATTEST_DEBUG_TOKENS")),
             firebase_project_number=os.getenv("FIREBASE_PROJECT_NUMBER") or None,
             firebase_app_ids=_csv(os.getenv("FIREBASE_APP_IDS")),
+            allowed_apis=tuple(p.strip("/") for p in _csv(os.getenv("ALLOWED_APIS")))
+            or DEFAULT_ALLOWED_APIS,
         )

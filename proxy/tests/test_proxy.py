@@ -49,11 +49,50 @@ def test_query_and_key_forwarded_correctly(client, apple, woosmap):
         "types": "point_of_interest",
         "location": "48.863469,2.330941",
         "radius": "1000",
+        "foo": "bar",
     }
     assert sent.headers["X-Api-Key"] == WOOSMAP_KEY
     assert sent.headers["X-iOS-Identifier"] == BUNDLE_ID
     assert sent.headers["Accept-Language"] == "fr"
     assert "X-Woosmap-App-Token" not in sent.headers
+
+
+def test_other_allowed_api_forwarded(client, apple, woosmap):
+    resp = call(
+        client,
+        attest(client, apple.new_device()),
+        "/localities/autocomplete?input=Louvre",
+    )
+    assert resp.status_code == 200
+    assert woosmap.requests[-1].url.path == "/localities/autocomplete"
+
+
+def test_api_not_in_allow_list_rejected(client, apple, woosmap):
+    resp = call(client, attest(client, apple.new_device()), "/stores/search?query=x")
+    assert resp.status_code == 404
+    assert resp.json() == {"error": "api_not_allowed"}
+    assert woosmap.requests == []
+
+
+def test_post_body_forwarded(make_client, apple, woosmap):
+    with make_client(allowed_apis=("distance/distancematrix/json",)) as c:
+        token = attest(c, apple.new_device())
+        resp = c.post(
+            "/distance/distancematrix/json",
+            headers={
+                **H,
+                "X-Woosmap-App-Token": token,
+                "X-Api-Key": WOOSMAP_KEY,
+                "X-iOS-Identifier": BUNDLE_ID,
+            },
+            json={"origins": "48.86,2.33", "destinations": "48.85,2.35"},
+        )
+    assert resp.status_code == 200
+    sent = woosmap.requests[-1]
+    assert sent.method == "POST"
+    assert sent.url.path == "/distance/distancematrix/json"
+    assert b'"origins"' in sent.content
+    assert sent.headers["Content-Type"] == "application/json"
 
 
 def test_missing_app_key_rejected(client, apple, woosmap):

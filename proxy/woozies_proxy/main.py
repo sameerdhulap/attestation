@@ -1,11 +1,12 @@
-"""Woozies proxy: attests the iOS app, then forwards Localities calls to Woosmap.
+"""Woozies proxy: attests the iOS app, then forwards Woosmap API calls.
 
 The app proves it's genuine (App Attest, a debug token in the simulator, or
 Firebase App Check for apps that use it), receives a short-lived app token, and
-calls `GET /localities/nearby` here with its Woosmap key (X-Api-Key) and bundle ID
-(X-iOS-Identifier). The proxy checks the token, keeps only the allowed query
-parameters, and forwards the call with those two headers to
-https://api.woosmap.com/localities/nearby. The proxy holds no Woosmap key.
+calls a Woosmap API path here, such as `GET /localities/nearby`, with its Woosmap
+key (X-Api-Key) and bundle ID (X-iOS-Identifier). The proxy checks the token and
+that the path is in ALLOWED_APIS, drops any key or private_key query parameter,
+and forwards the call with those two headers to https://api.woosmap.com/<path>.
+The proxy holds no Woosmap key.
 
 Run with:  uvicorn woozies_proxy.main:build_app --factory --reload
 """
@@ -45,12 +46,11 @@ log = logging.getLogger("woozies_proxy")
 CLIENT_HEADER = "X-Client-Id"
 # Apple Team IDs are 10 uppercase letters or digits.
 TEAM_ID_PATTERN = re.compile(r"[A-Z0-9]{10}")
-# Only these query parameters reach Woosmap; anything else (including a key or
-# private_key query parameter) is dropped. The key travels in the X-Api-Key header.
-NEARBY_PARAMS = ("types", "location", "radius", "page", "limit", "excluded_types")
+# Query parameters never forwarded: the key travels only in the X-Api-Key header.
+DROPPED_PARAMS = ("key", "private_key")
 # App headers recorded in the logs for each forwarded call.
 CAPTURED_HEADERS = ("x-client-id", "x-ios-identifier", "x-app-version", "user-agent")
-FORWARDED_HEADERS = ("accept-language",)
+FORWARDED_HEADERS = ("accept-language", "content-type")
 
 
 class IosRegisterBody(BaseModel):
@@ -253,9 +253,10 @@ def create_app(
             "mode": key.mode.value,
         }
 
-    # Localities proxy -------------------------------------------------------------
-    @app.get("/localities/nearby")
-    async def localities_nearby(request: Request):
+    # Woosmap proxy ----------------------------------------------------------------
+    # Registered last so the attestation routes above take precedence.
+    @app.api_route("/{api_path:path}", methods=["GET", "POST"])
+    async def woosmap_api(api_path: str, request: Request):
         decision = gate.evaluate(request.headers)
         captured = {
             h: request.headers.get(h)
@@ -264,17 +265,24 @@ def create_app(
         }
         if not decision.allowed:
             log.info(
-                "nearby rejected code=%s headers=%s", decision.error_code, captured
+                "api rejected path=%s code=%s headers=%s",
+                api_path,
+                decision.error_code,
+                captured,
             )
             return JSONResponse(status_code=401, content={"error": decision.error_code})
+        # Exact match only, so "..", extra segments or other products never get through.
+        if api_path.strip("/") not in settings.allowed_apis:
+            log.info("api not allowed path=%s", api_path)
+            return JSONResponse(status_code=404, content={"error": "api_not_allowed"})
 
         params = [
             (name, value)
             for name, value in request.query_params.multi_items()
-            if name in NEARBY_PARAMS
+            if name not in DROPPED_PARAMS
         ]
         dropped = sorted(
-            {n for n, _ in request.query_params.multi_items()} - set(NEARBY_PARAMS)
+            {n for n, _ in request.query_params.multi_items()} & set(DROPPED_PARAMS)
         )
         # The app sends its own Woosmap key and bundle ID; only attested apps get this far.
         app_key = request.headers.get("x-api-key")
@@ -294,7 +302,9 @@ def create_app(
 
         claims = decision.claims or {}
         log.info(
-            "nearby forward status=%s att=%s sub=%s params=%s dropped=%s headers=%s",
+            "api forward %s path=%s status=%s att=%s sub=%s params=%s dropped=%s headers=%s",
+            request.method,
+            api_path,
             decision.status,
             claims.get("att"),
             claims.get("sub"),
@@ -303,8 +313,12 @@ def create_app(
             captured,
         )
         try:
-            upstream = await request.app.state.upstream.get(
-                "/localities/nearby", params=params, headers=headers
+            upstream = await request.app.state.upstream.request(
+                request.method,
+                "/" + api_path.strip("/"),
+                params=params,
+                headers=headers,
+                content=await request.body() if request.method == "POST" else None,
             )
         except httpx.HTTPError as exc:
             log.error("upstream error: %s", exc)
