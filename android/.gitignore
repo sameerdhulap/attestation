@@ -1,0 +1,7 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+# Holds the Woosmap key and Play Integrity project number
+secrets.properties

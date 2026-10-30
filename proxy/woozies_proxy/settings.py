@@ -45,8 +45,8 @@ def _bool(value: str | None, default: bool = False) -> bool:
 @dataclass(frozen=True)
 class ProxySettings:
     woosmap_api_base: str = "https://api.woosmap.com"
-    client_id: str = "woozies-ios"
-    ios_bundle_id: str = "com.woosmap.app.woozies"
+    client_id: str = "ancdefghijklmbopqrstuvwxyz"  # placeholder; overridden by CLIENT_ID in .env
+    ios_bundle_id: str = "com.acme.yourapp"  # placeholder; overridden by IOS_BUNDLE_ID in .env
     ios_allow_development: bool = True
     attest_mode: Mode = Mode.ENFORCE
     apple_root_ca_path: str | None = None
@@ -58,6 +58,11 @@ class ProxySettings:
     debug_tokens: tuple[str, ...] = ()
     firebase_project_number: str | None = None
     firebase_app_ids: tuple[str, ...] = ()
+    android_package: str = "com.acme.yourapp"  # placeholder; overridden by ANDROID_PACKAGE in .env
+    # SHA-256 of the app signing certificate(s); empty skips the certificate check
+    android_cert_sha256: tuple[str, ...] = ()
+    # Service-account JSON with Play Integrity API access; empty disables Play Integrity
+    play_integrity_credentials: str | None = None
     upstream_timeout_seconds: float = 10.0
     allowed_apis: tuple[str, ...] = DEFAULT_ALLOWED_APIS
     extra: dict = field(default_factory=dict)
@@ -72,6 +77,8 @@ class ProxySettings:
             ios_allow_development=self.ios_allow_development,
             firebase_project_number=self.firebase_project_number,
             firebase_app_ids=self.firebase_app_ids,
+            android_packages=(self.android_package,),
+            android_cert_sha256=self.android_cert_sha256,
             token_ttl_seconds=self.token_ttl_seconds,
         )
 
@@ -94,6 +101,9 @@ class ProxySettings:
             debug_tokens=_csv(os.getenv("ATTEST_DEBUG_TOKENS")),
             firebase_project_number=os.getenv("FIREBASE_PROJECT_NUMBER") or None,
             firebase_app_ids=_csv(os.getenv("FIREBASE_APP_IDS")),
+            android_package=os.getenv("ANDROID_PACKAGE", cls.android_package),
+            android_cert_sha256=_csv(os.getenv("ANDROID_CERT_SHA256")),
+            play_integrity_credentials=os.getenv("PLAY_INTEGRITY_CREDENTIALS") or None,
             allowed_apis=tuple(p.strip("/") for p in _csv(os.getenv("ALLOWED_APIS")))
             or DEFAULT_ALLOWED_APIS,
         )
