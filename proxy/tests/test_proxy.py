@@ -9,7 +9,10 @@ from conftest import (
     attest,
     get_challenge,
     register,
+    token_claims,
 )
+
+OTHER_BUNDLE_ID = "com.woosmap.app.other"
 
 NEARBY = (
     "/localities/nearby?types=point_of_interest&location=48.863469,2.330941&radius=1000"
@@ -143,6 +146,27 @@ def test_debug_token_for_simulator(client):
     assert call(client, resp.json()["token"]).status_code == 200
 
 
+def test_debug_token_for_android_emulator(client):
+    resp = client.post(
+        "/attest/debug/token",
+        headers={**H, "X-Android-Identifier": BUNDLE_ID},
+        json={"debug_token": DEBUG_TOKEN},
+    )
+    assert resp.status_code == 200
+    claims = token_claims(resp.json()["token"])
+    assert (claims["app"], claims["plt"]) == (BUNDLE_ID, "android")
+
+
+def test_debug_token_for_unlisted_app_rejected(client):
+    resp = client.post(
+        "/attest/debug/token",
+        headers={**H, "X-iOS-Identifier": OTHER_BUNDLE_ID},
+        json={"debug_token": DEBUG_TOKEN},
+    )
+    assert resp.status_code == 403
+    assert resp.json() == {"error": "app_not_allowed"}
+
+
 def test_debug_tokens_disabled_by_default(make_client):
     with make_client(debug_tokens=()) as c:
         resp = c.post(
@@ -166,6 +190,34 @@ def test_ios_refresh_with_assertion(client, apple):
     )
     assert resp.status_code == 200
     assert call(client, resp.json()["token"]).status_code == 200
+
+
+def test_second_ios_app_registers_and_refreshes(make_client, apple):
+    device = apple.new_device()
+    with make_client(ios_bundle_ids=(BUNDLE_ID, OTHER_BUNDLE_ID)) as c:
+        resp = register(c, device, bundle_id=OTHER_BUNDLE_ID)
+        assert resp.status_code == 200, resp.text
+        assert token_claims(resp.json()["token"])["app"] == OTHER_BUNDLE_ID
+
+        challenge = get_challenge(c)
+        refreshed = c.post(
+            "/attest/ios/token",
+            headers=H,
+            json={
+                "key_id": device.key_id,
+                "challenge": challenge,
+                "assertion": device.assertion(
+                    challenge, app_id=f"ABCDE12345.{OTHER_BUNDLE_ID}"
+                ),
+            },
+        )
+    assert refreshed.status_code == 200, refreshed.text
+    assert token_claims(refreshed.json()["token"])["app"] == OTHER_BUNDLE_ID
+
+
+def test_unlisted_ios_app_rejected(client, apple):
+    resp = register(client, apple.new_device(), bundle_id=OTHER_BUNDLE_ID)
+    assert resp.status_code == 401
 
 
 def test_wrong_team_id_rejected(client, apple):

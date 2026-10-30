@@ -34,6 +34,11 @@ def _csv(value: str | None) -> tuple[str, ...]:
     return tuple(v.strip() for v in (value or "").split(",") if v.strip())
 
 
+def _csv_env(name: str, legacy_name: str) -> tuple[str, ...]:
+    """A comma-separated list from `name`, falling back to the older single-value `legacy_name`."""
+    return _csv(os.getenv(name) or os.getenv(legacy_name))
+
+
 def _bool(value: str | None, default: bool = False) -> bool:
     return (
         default
@@ -46,7 +51,8 @@ def _bool(value: str | None, default: bool = False) -> bool:
 class ProxySettings:
     woosmap_api_base: str = "https://api.woosmap.com"
     client_id: str = "ancdefghijklmbopqrstuvwxyz"  # placeholder; overridden by CLIENT_ID in .env
-    ios_bundle_id: str = "com.acme.yourapp"  # placeholder; overridden by IOS_BUNDLE_ID in .env
+    # placeholder; overridden by IOS_BUNDLE_IDS (comma-separated) in .env
+    ios_bundle_ids: tuple[str, ...] = ("com.acme.yourapp",)
     ios_allow_development: bool = True
     attest_mode: Mode = Mode.ENFORCE
     apple_root_ca_path: str | None = None
@@ -58,7 +64,8 @@ class ProxySettings:
     debug_tokens: tuple[str, ...] = ()
     firebase_project_number: str | None = None
     firebase_app_ids: tuple[str, ...] = ()
-    android_package: str = "com.acme.yourapp"  # placeholder; overridden by ANDROID_PACKAGE in .env
+    # placeholder; overridden by ANDROID_PACKAGES (comma-separated) in .env
+    android_packages: tuple[str, ...] = ("com.acme.yourapp",)
     # SHA-256 of the app signing certificate(s); empty skips the certificate check
     android_cert_sha256: tuple[str, ...] = ()
     # Service-account JSON with Play Integrity API access; empty disables Play Integrity
@@ -68,16 +75,16 @@ class ProxySettings:
     extra: dict = field(default_factory=dict)
 
     def key_config(self) -> KeyConfig:
-        """The attestation rules for the one client this proxy serves."""
+        """The attestation rules for the client this proxy serves, covering every listed app."""
         return KeyConfig(
             api_key=self.client_id,
             project_id=self.client_id,
             mode=self.attest_mode,
-            ios_bundle_ids=(self.ios_bundle_id,),
+            ios_bundle_ids=self.ios_bundle_ids,
             ios_allow_development=self.ios_allow_development,
             firebase_project_number=self.firebase_project_number,
             firebase_app_ids=self.firebase_app_ids,
-            android_packages=(self.android_package,),
+            android_packages=self.android_packages,
             android_cert_sha256=self.android_cert_sha256,
             token_ttl_seconds=self.token_ttl_seconds,
         )
@@ -90,7 +97,8 @@ class ProxySettings:
         return cls(
             woosmap_api_base=os.getenv("WOOSMAP_API_BASE", cls.woosmap_api_base),
             client_id=os.getenv("CLIENT_ID", cls.client_id),
-            ios_bundle_id=os.getenv("IOS_BUNDLE_ID", cls.ios_bundle_id),
+            ios_bundle_ids=_csv_env("IOS_BUNDLE_IDS", "IOS_BUNDLE_ID")
+            or cls.ios_bundle_ids,
             ios_allow_development=_bool(os.getenv("IOS_ALLOW_DEVELOPMENT"), True),
             attest_mode=Mode(os.getenv("ATTEST_MODE", "enforce")),
             apple_root_ca_path=os.getenv("APPLE_ROOT_CA_PATH")
@@ -101,7 +109,8 @@ class ProxySettings:
             debug_tokens=_csv(os.getenv("ATTEST_DEBUG_TOKENS")),
             firebase_project_number=os.getenv("FIREBASE_PROJECT_NUMBER") or None,
             firebase_app_ids=_csv(os.getenv("FIREBASE_APP_IDS")),
-            android_package=os.getenv("ANDROID_PACKAGE", cls.android_package),
+            android_packages=_csv_env("ANDROID_PACKAGES", "ANDROID_PACKAGE")
+            or cls.android_packages,
             android_cert_sha256=_csv(os.getenv("ANDROID_CERT_SHA256")),
             play_integrity_credentials=os.getenv("PLAY_INTEGRITY_CREDENTIALS") or None,
             allowed_apis=tuple(p.strip("/") for p in _csv(os.getenv("ALLOWED_APIS")))

@@ -1,4 +1,4 @@
-"""Woozies proxy: attests the iOS app, then forwards Woosmap API calls.
+"""Woozies proxy: attests iOS and Android apps, then forwards Woosmap API calls.
 
 The app proves it's genuine (App Attest, a debug token in the simulator, or
 Firebase App Check for apps that use it), receives a short-lived app token, and
@@ -7,6 +7,10 @@ key (X-Api-Key) and bundle ID (X-iOS-Identifier). The proxy checks the token and
 that the path is in ALLOWED_APIS, drops any key or private_key query parameter,
 and forwards the call with those two headers to https://api.woosmap.com/<path>.
 The proxy holds no Woosmap key.
+
+One proxy serves every app in IOS_BUNDLE_IDS and ANDROID_PACKAGES. App Attest
+proofs are matched against each bundle ID; Android apps name their package in
+X-Android-Identifier.
 
 Run with:  uvicorn woozies_proxy.main:build_app --factory --reload
 """
@@ -85,6 +89,11 @@ class FirebaseTokenBody(BaseModel):
 class AndroidTokenBody(BaseModel):
     integrity_token: str
     challenge: str
+
+
+def _bundle_id(app_id: str) -> str:
+    """The bundle ID part of an App Attest App ID ("TEAMID.bundle.id")."""
+    return app_id.split(".", 1)[1]
 
 
 def _token_body(issued: IssuedToken) -> dict:
@@ -174,7 +183,7 @@ def create_app(
         cfg = client_for(x_client_id)
         if app_attest is None:
             raise AttestationError("app_attest_not_configured", status=503)
-        # The app sends its Team ID; the attestation must match TEAMID.<configured bundle ID>.
+        # The app sends its Team ID; the attestation must match TEAMID.<one of IOS_BUNDLE_IDS>.
         if not x_apple_team_id:
             raise AttestationError("apple_team_id_missing", status=400)
         if not TEAM_ID_PATTERN.fullmatch(x_apple_team_id):
@@ -185,15 +194,22 @@ def create_app(
             attestation_b64=body.attestation,
             client_data=body.challenge.encode(),
             api_key=x_client_id,
-            allowed_app_ids=(f"{x_apple_team_id}.{settings.ios_bundle_id}",),
+            allowed_app_ids=tuple(
+                f"{x_apple_team_id}.{bundle_id}" for bundle_id in settings.ios_bundle_ids
+            ),
             allow_development=cfg.ios_allow_development,
         )
         store.save_ios_key(record)
-        log.info("ios_registered key_id=%s env=%s", record.key_id, record.environment)
+        log.info(
+            "ios_registered key_id=%s app=%s env=%s",
+            record.key_id,
+            record.app_id,
+            record.environment,
+        )
         return _token_body(
             issuer.issue(
                 key=cfg,
-                app=settings.ios_bundle_id,
+                app=_bundle_id(record.app_id),
                 platform="ios",
                 method="app_attest",
                 subject=record.key_id,
@@ -218,7 +234,7 @@ def create_app(
         return _token_body(
             issuer.issue(
                 key=cfg,
-                app=settings.ios_bundle_id,
+                app=_bundle_id(record.app_id),
                 platform="ios",
                 method="app_attest",
                 subject=record.key_id,
@@ -226,18 +242,32 @@ def create_app(
         )
 
     @app.post("/attest/debug/token")
-    def debug_token(body: DebugTokenBody, x_client_id: str = Header(...)):
+    def debug_token(
+        body: DebugTokenBody,
+        x_client_id: str = Header(...),
+        x_ios_identifier: str | None = Header(None),
+        x_android_identifier: str | None = Header(None),
+    ):
         """Simulator and CI only. Disabled unless ATTEST_DEBUG_TOKENS is set."""
         cfg = client_for(x_client_id)
         if body.debug_token not in settings.debug_tokens:
             raise AttestationError("debug_token_invalid")
-        log.warning("debug token used client=%s (development only)", x_client_id)
+        # The app names itself with its platform header; without one, the first iOS app.
+        if x_android_identifier:
+            app_id, platform = x_android_identifier, "android"
+        else:
+            app_id, platform = x_ios_identifier or settings.ios_bundle_ids[0], "ios"
+        if app_id not in cfg.allowed_apps:
+            raise AttestationError("app_not_allowed", app_id, status=403)
+        log.warning(
+            "debug token used client=%s app=%s (development only)", x_client_id, app_id
+        )
         subject = "debug-" + hashlib.sha256(body.debug_token.encode()).hexdigest()[:12]
         return _token_body(
             issuer.issue(
                 key=cfg,
-                app=settings.ios_bundle_id,
-                platform="ios",
+                app=app_id,
+                platform=platform,
                 method="debug",
                 subject=subject,
             )
@@ -261,26 +291,38 @@ def create_app(
         )
 
     @app.post("/attest/android/token")
-    def android_token(body: AndroidTokenBody, x_client_id: str = Header(...)):
-        """Android: the app requests a Play Integrity token with the challenge as its nonce."""
+    def android_token(
+        body: AndroidTokenBody,
+        x_client_id: str = Header(...),
+        x_android_identifier: str | None = Header(None),
+    ):
+        """Android: the app requests a Play Integrity token with the challenge as its nonce.
+
+        The app names its package in X-Android-Identifier; Google decodes the token
+        for that package, and the verdict must match it.
+        """
         cfg = client_for(x_client_id)
         if play_integrity is None:
             raise AttestationError("play_integrity_not_configured", status=503)
+        if not x_android_identifier:
+            raise AttestationError("app_identifier_missing", status=400)
         challenges.consume(body.challenge, x_client_id)
         level = play_integrity.verify(
             token=body.integrity_token,
             challenge=body.challenge,
-            package=settings.android_package,
+            package=x_android_identifier,
             key=cfg,
         )
         subject = (
             "android-" + hashlib.sha256(body.integrity_token.encode()).hexdigest()[:12]
         )
-        log.info("android_verified sub=%s level=%s", subject, level)
+        log.info(
+            "android_verified app=%s sub=%s level=%s", x_android_identifier, subject, level
+        )
         return _token_body(
             issuer.issue(
                 key=cfg,
-                app=settings.android_package,
+                app=x_android_identifier,
                 platform="android",
                 method="play_integrity",
                 subject=subject,
