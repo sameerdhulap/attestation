@@ -180,6 +180,9 @@ class MockWoosmap:
 
 def make_settings(**overrides) -> ProxySettings:
     base = dict(
+        client_id=CLIENT_ID,
+        ios_bundle_id=BUNDLE_ID,
+        android_package=BUNDLE_ID,
         ios_allow_development=False,
         attest_mode=Mode.ENFORCE,
         debug_tokens=(DEBUG_TOKEN,),

@@ -45,8 +45,8 @@ def _bool(value: str | None, default: bool = False) -> bool:
 @dataclass(frozen=True)
 class ProxySettings:
     woosmap_api_base: str = "https://api.woosmap.com"
-    client_id: str = "woozies-ios"
-    ios_bundle_id: str = "com.woosmap.app.woozies"
+    client_id: str = "ancdefghijklmbopqrstuvwxyz"  # placeholder; overridden by CLIENT_ID in .env
+    ios_bundle_id: str = "com.acme.yourapp"  # placeholder; overridden by IOS_BUNDLE_ID in .env
     ios_allow_development: bool = True
     attest_mode: Mode = Mode.ENFORCE
     apple_root_ca_path: str | None = None
@@ -58,7 +58,7 @@ class ProxySettings:
     debug_tokens: tuple[str, ...] = ()
     firebase_project_number: str | None = None
     firebase_app_ids: tuple[str, ...] = ()
-    android_package: str = "com.woosmap.app.woozies"
+    android_package: str = "com.acme.yourapp"  # placeholder; overridden by ANDROID_PACKAGE in .env
     # SHA-256 of the app signing certificate(s); empty skips the certificate check
     android_cert_sha256: tuple[str, ...] = ()
     # Service-account JSON with Play Integrity API access; empty disables Play Integrity
