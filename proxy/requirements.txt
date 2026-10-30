@@ -1,0 +1,6 @@
+fastapi>=0.110
+uvicorn>=0.29
+httpx>=0.27
+pyjwt[crypto]>=2.8
+cryptography>=42
+cbor2>=5.6

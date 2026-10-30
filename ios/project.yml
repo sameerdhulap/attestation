@@ -1,0 +1,37 @@
+# Generate the Xcode project with:  brew install xcodegen && xcodegen
+name: Woozies
+options:
+  bundleIdPrefix: com.woosmap.app
+  deploymentTarget:
+    iOS: "16.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+targets:
+  Woozies:
+    type: application
+    platform: iOS
+    sources: [Woozies]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.woosmap.app.woozies
+        DEVELOPMENT_TEAM: ""          # your Apple Team ID (same as APPLE_TEAM_ID in the proxy)
+        CODE_SIGN_STYLE: Automatic
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+    entitlements:
+      path: Woozies/Woozies.entitlements
+      properties:
+        # "development" for Xcode builds; App Store / TestFlight builds use "production"
+        com.apple.developer.devicecheck.appattest-environment: development
+    info:
+      path: Woozies/Info.plist
+      properties:
+        CFBundleDisplayName: Woozies
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        # Lets the app reach the proxy over plain HTTP on localhost / the local network during development
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        # Proxy address. Simulator: http://localhost:8000. Device: http://<your-mac-ip>:8000
+        WoosmapProxyBaseURL: http://localhost:8000

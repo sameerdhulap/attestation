@@ -1,0 +1,5 @@
+.env
+*.pem
+!certs/README.md
+__pycache__/
+.pytest_cache/
