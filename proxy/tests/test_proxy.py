@@ -103,11 +103,11 @@ def test_missing_app_key_rejected(client, apple, woosmap):
     assert woosmap.requests == []
 
 
-def test_missing_ios_identifier_rejected(client, apple, woosmap):
+def test_missing_app_identifier_rejected(client, apple, woosmap):
     token = attest(client, apple.new_device())
     resp = call(client, token, extra={"X-iOS-Identifier": ""})
     assert resp.status_code == 400
-    assert resp.json() == {"error": "ios_identifier_missing"}
+    assert resp.json() == {"error": "app_identifier_missing"}
     assert woosmap.requests == []
 
 

@@ -31,6 +31,7 @@ from attestation.firebase_app_check import (
     platform_from_app_id,
 )
 from attestation.gateway import AppTokenGate
+from attestation.play_integrity import GooglePlayDecoder, PlayIntegrityVerifier
 from attestation.store import ChallengeService, InMemoryStore
 from attestation.tokens import (
     IssuedToken,
@@ -49,8 +50,16 @@ TEAM_ID_PATTERN = re.compile(r"[A-Z0-9]{10}")
 # Query parameters never forwarded: the key travels only in the X-Api-Key header.
 DROPPED_PARAMS = ("key", "private_key")
 # App headers recorded in the logs for each forwarded call.
-CAPTURED_HEADERS = ("x-client-id", "x-ios-identifier", "x-app-version", "user-agent")
+CAPTURED_HEADERS = (
+    "x-client-id",
+    "x-ios-identifier",
+    "x-android-identifier",
+    "x-app-version",
+    "user-agent",
+)
 FORWARDED_HEADERS = ("accept-language", "content-type")
+# Headers Woosmap uses to check the key's app restriction; the app sends one platform's set.
+PLATFORM_HEADERS = ("x-ios-identifier", "x-android-identifier", "x-android-fingerprint")
 
 
 class IosRegisterBody(BaseModel):
@@ -73,6 +82,11 @@ class FirebaseTokenBody(BaseModel):
     app_check_token: str
 
 
+class AndroidTokenBody(BaseModel):
+    integrity_token: str
+    challenge: str
+
+
 def _token_body(issued: IssuedToken) -> dict:
     return {
         "token": issued.token,
@@ -87,6 +101,7 @@ def create_app(
     apple_root: x509.Certificate | None = None,
     upstream_transport: httpx.AsyncBaseTransport | None = None,
     firebase_verifier: FirebaseAppCheckVerifier | None = None,
+    play_integrity: PlayIntegrityVerifier | None = None,
 ) -> FastAPI:
     key = settings.key_config()
     registry = KeyRegistry([key])
@@ -113,6 +128,12 @@ def create_app(
 
     if firebase_verifier is None and settings.firebase_project_number:
         firebase_verifier = FirebaseAppCheckVerifier()
+    if play_integrity is None and settings.play_integrity_credentials:
+        play_integrity = PlayIntegrityVerifier(
+            GooglePlayDecoder(settings.play_integrity_credentials)
+        )
+    if play_integrity is None:
+        log.warning("Play Integrity disabled: set PLAY_INTEGRITY_CREDENTIALS")
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -239,6 +260,34 @@ def create_app(
             )
         )
 
+    @app.post("/attest/android/token")
+    def android_token(body: AndroidTokenBody, x_client_id: str = Header(...)):
+        """Android: the app requests a Play Integrity token with the challenge as its nonce."""
+        cfg = client_for(x_client_id)
+        if play_integrity is None:
+            raise AttestationError("play_integrity_not_configured", status=503)
+        challenges.consume(body.challenge, x_client_id)
+        level = play_integrity.verify(
+            token=body.integrity_token,
+            challenge=body.challenge,
+            package=settings.android_package,
+            key=cfg,
+        )
+        subject = (
+            "android-" + hashlib.sha256(body.integrity_token.encode()).hexdigest()[:12]
+        )
+        log.info("android_verified sub=%s level=%s", subject, level)
+        return _token_body(
+            issuer.issue(
+                key=cfg,
+                app=settings.android_package,
+                platform="android",
+                method="play_integrity",
+                subject=subject,
+                level=level,
+            )
+        )
+
     @app.get("/.well-known/jwks.json")
     def jwks():
         return issuer.public_jwks()
@@ -249,6 +298,7 @@ def create_app(
             "status": "ok",
             "app_attest": app_attest is not None,
             "firebase": firebase_verifier is not None,
+            "play_integrity": play_integrity is not None,
             "debug_tokens": bool(settings.debug_tokens),
             "mode": key.mode.value,
         }
@@ -286,16 +336,21 @@ def create_app(
         )
         # The app sends its own Woosmap key and bundle ID; only attested apps get this far.
         app_key = request.headers.get("x-api-key")
-        ios_identifier = request.headers.get("x-ios-identifier")
         if not app_key:
             return JSONResponse(
                 status_code=400, content={"error": "woosmap_key_missing"}
             )
-        if not ios_identifier:
+        if not (
+            request.headers.get("x-ios-identifier")
+            or request.headers.get("x-android-identifier")
+        ):
             return JSONResponse(
-                status_code=400, content={"error": "ios_identifier_missing"}
+                status_code=400, content={"error": "app_identifier_missing"}
             )
-        headers = {"X-Api-Key": app_key, "X-iOS-Identifier": ios_identifier}
+        headers = {"X-Api-Key": app_key}
+        headers.update(
+            {h: request.headers[h] for h in PLATFORM_HEADERS if request.headers.get(h)}
+        )
         headers.update(
             {h: request.headers[h] for h in FORWARDED_HEADERS if h in request.headers}
         )

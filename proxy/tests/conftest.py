@@ -200,12 +200,13 @@ def woosmap():
 
 @pytest.fixture
 def make_client(apple, woosmap):
-    def _make(firebase_verifier=None, **overrides):
+    def _make(firebase_verifier=None, play_integrity=None, **overrides):
         app = create_app(
             make_settings(**overrides),
             apple_root=apple.root,
             upstream_transport=httpx.MockTransport(woosmap.handler),
             firebase_verifier=firebase_verifier,
+            play_integrity=play_integrity,
         )
         return TestClient(app)
 
