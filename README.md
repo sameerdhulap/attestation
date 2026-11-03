@@ -25,6 +25,7 @@ iOS app (com.woosmap.app.woozies)            Python proxy                       
 | `proxy/tests/` | 52 tests, including a fake Apple authority and a fake Play Integrity decoder, so nothing needs a device |
 | `ios/` | SwiftUI app plus an XcodeGen `project.yml` |
 | `android/` | Kotlin + Jetpack Compose app using the same proxy |
+| `docs/` | [Architecture](docs/architecture.md): attestation flow, per-call validation, external calls, limitations |
 
 ## 1. Run the proxy
 
