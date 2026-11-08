@@ -3,6 +3,7 @@ from urllib.parse import parse_qsl
 from attestation.config import Mode
 from conftest import (
     BUNDLE_ID,
+    CLIENT_ID,
     DEBUG_TOKEN,
     H,
     WOOSMAP_KEY,
@@ -20,9 +21,9 @@ NEARBY = (
 
 
 def call(client, token=None, url=NEARBY, extra=None):
+    """An API call as the app makes it: no X-Api-Key, the key is sealed in the token."""
     headers = {
-        **H,
-        "X-Api-Key": WOOSMAP_KEY,
+        "X-Client-Id": CLIENT_ID,
         "X-iOS-Identifier": BUNDLE_ID,
         "X-App-Version": "1.0",
     }
@@ -85,7 +86,6 @@ def test_post_body_forwarded(make_client, apple, woosmap):
             headers={
                 **H,
                 "X-Woosmap-App-Token": token,
-                "X-Api-Key": WOOSMAP_KEY,
                 "X-iOS-Identifier": BUNDLE_ID,
             },
             json={"origins": "48.86,2.33", "destinations": "48.85,2.35"},
@@ -98,12 +98,14 @@ def test_post_body_forwarded(make_client, apple, woosmap):
     assert sent.headers["Content-Type"] == "application/json"
 
 
-def test_missing_app_key_rejected(client, apple, woosmap):
-    token = attest(client, apple.new_device())
-    resp = call(client, token, extra={"X-Api-Key": ""})
+def test_attestation_without_app_key_rejected(client):
+    resp = client.post(
+        "/attest/debug/token",
+        headers={"X-Client-Id": CLIENT_ID},
+        json={"debug_token": DEBUG_TOKEN},
+    )
     assert resp.status_code == 400
     assert resp.json() == {"error": "woosmap_key_missing"}
-    assert woosmap.requests == []
 
 
 def test_missing_app_identifier_rejected(client, apple, woosmap):
@@ -132,10 +134,13 @@ def test_garbage_token_rejected(client, woosmap):
     assert woosmap.requests == []
 
 
-def test_monitor_mode_forwards_but_flags(make_client, woosmap):
+def test_monitor_mode_needs_a_token_for_the_key(make_client, woosmap):
+    # Monitor mode lets an unverified call through the gate, but without a token
+    # there's no key to forward, and a header key is never used.
     with make_client(attest_mode=Mode.MONITOR) as c:
-        assert call(c).status_code == 200
-    assert len(woosmap.requests) == 1
+        resp = call(c, extra={"X-Api-Key": WOOSMAP_KEY})
+    assert resp.json() == {"error": "woosmap_key_missing"}
+    assert woosmap.requests == []
 
 
 def test_debug_token_for_simulator(client):

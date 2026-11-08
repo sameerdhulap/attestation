@@ -58,7 +58,7 @@ If the proof checks out, `TokenIssuer.issue` signs a token with these claims:
 | `att` | Attestation method, for example `app_attest` or `play_integrity` |
 | `sub` | Device or key identifier |
 | `exp` | Expiry time |
-| `ek` | The app's Woosmap key, encrypted (only when the app sent `X-Api-Key` while attesting) |
+| `ek` | The app's Woosmap key, encrypted |
 
 ### Sealed Woosmap key
 
@@ -66,8 +66,8 @@ The token is signed, not encrypted, so anyone holding it can read its claims. To
 
 - The secret is `ATTEST_ENCRYPTION_KEY`: 32 bytes, base64. Without it the proxy makes a new one on every start, which invalidates tokens that carry a key.
 - Each sealed key is bound to its token's `jti`, so it can't be moved to another token.
-- The app sends `X-Api-Key` only to the `/attest/*` endpoints. API calls carry just the token.
-- Tokens issued without a key still work. The proxy falls back to the `X-Api-Key` header on each call.
+- The app sends `X-Api-Key` only to the `/attest/*` endpoints. Without it, attestation returns `400 woosmap_key_missing`, so every token carries a key.
+- API calls carry just the token. The proxy never uses an `X-Api-Key` header on an API call.
 
 ### Several apps
 
@@ -88,7 +88,7 @@ flowchart TD
     D -- no --> R3[401 app_token_invalid / revoked]
     D -- yes --> E{4. Path in ALLOWED_APIS?}
     E -- no --> R4[404 api_not_allowed]
-    E -- yes --> F{5. Woosmap key and app identifier?<br/>sealed in token, or X-Api-Key}
+    E -- yes --> F{5. Sealed key in token<br/>and app identifier?}
     F -- no --> R5[400 woosmap_key_missing / app_identifier_missing]
     F -- yes --> G[6. Forward to api.woosmap.com]
     G --> H{Woosmap 401/403?}
@@ -102,7 +102,7 @@ flowchart TD
 | 2 | `TokenVerifier.verify` | Signature, `kid`, issuer, audience, expiry, required claims |
 | 3 | `AppTokenGate._check` | Token client equals `X-Client-Id`; app still allowed (skipped for debug tokens); client, app and device not denied |
 | 4 | `woosmap_api` | Exact match against `ALLOWED_APIS` |
-| 5 | `woosmap_api` | The key sealed in the token (ignoring any `X-Api-Key` header), otherwise `X-Api-Key`; plus `X-iOS-Identifier` or `X-Android-Identifier`. A sealed key that won't decrypt gives `401 app_token_invalid`. |
+| 5 | `woosmap_api` | The key sealed in the token (never an `X-Api-Key` header), plus `X-iOS-Identifier` or `X-Android-Identifier`. A sealed key that won't decrypt gives `401 app_token_invalid`. |
 | 6 | `woosmap_api` | Drops `key` and `private_key` from the query string, then forwards the key, platform headers, `Accept-Language`, and for POST the body |
 
 `ATTEST_MODE` controls steps 1–3:
@@ -110,8 +110,10 @@ flowchart TD
 | Mode | Steps 1–3 |
 | --- | --- |
 | `enforce` | A failure is rejected |
-| `monitor` | A failure is logged, and the call is forwarded anyway |
+| `monitor` | A failure is logged, and the call continues |
 | `off` | The checks are skipped |
+
+The key comes only from a valid token, so in `monitor` and `off` modes a call without one still stops at step 5 with `400 woosmap_key_missing`. These modes no longer let apps that don't attest reach Woosmap.
 
 When the app gets an `app_token_*` 401, it attests again once and retries the call.
 

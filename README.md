@@ -122,7 +122,7 @@ curl -i "http://localhost:8000/localities/nearby?types=point_of_interest&locatio
   -H "X-iOS-Identifier: com.woosmap.app.woozies"
 ```
 
-You'll get `401 {"error":"app_token_missing"}`. Woosmap is never called.
+You'll get `401 {"error":"app_token_missing"}`. Woosmap is never called. The copied key doesn't help either: the proxy never uses an `X-Api-Key` header on an API call, only the key sealed in a valid app token.
 
 ## How the proxy handles a call
 
@@ -134,10 +134,10 @@ For each call, the proxy does the following:
 2. It checks the path is in `ALLOWED_APIS`, matching exactly. Any other path gets `404 api_not_allowed`, and Woosmap is never called.
 3. It captures the app headers `X-Client-Id`, `X-iOS-Identifier`, `X-App-Version` and `User-Agent`, plus the token's claims, in the log.
 4. It forwards the query string, except any `key` or `private_key` parameter, which is dropped and logged. For `POST`, it forwards the body and `Content-Type`.
-5. It calls Woosmap with the app's key and `X-iOS-Identifier`, passing on `Accept-Language` if present. The key comes from the token, where the proxy sealed it when the app attested; any `X-Api-Key` the app sends on the call is then ignored. A token without a sealed key falls back to the `X-Api-Key` header. If there's no key or no app identifier, it returns `400 woosmap_key_missing` or `400 app_identifier_missing` instead.
+5. It calls Woosmap with the app's key and `X-iOS-Identifier`, passing on `Accept-Language` if present. The key comes only from the token, where the proxy sealed it when the app attested; an `X-Api-Key` header on the call is never used. Attestation therefore needs `X-Api-Key`, or it returns `400 woosmap_key_missing`. If the token holds no key or the call has no app identifier, it returns `400 woosmap_key_missing` or `400 app_identifier_missing` instead.
 6. It returns Woosmap's status and JSON unchanged, with one exception. A 401 or 403 from Woosmap means the app's key is wrong or restricted, so it becomes `502 upstream_auth_failed`. That way the app never confuses it with its own token being rejected.
 
-`ATTEST_MODE` controls step 1: `enforce` rejects, `monitor` forwards but logs unverified calls, and `off` skips the check.
+`ATTEST_MODE` controls step 1: `enforce` rejects, `monitor` lets unverified calls past but logs them, and `off` skips the check. Because the key only comes from a valid token, a call without one still stops at step 5 with `400 woosmap_key_missing` in every mode.
 
 ## Firebase App Check (optional)
 

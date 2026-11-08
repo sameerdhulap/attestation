@@ -8,13 +8,14 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from attestation.config import AttestationError, KeyConfig, Mode
-from attestation.tokens import KeySealer, TokenIssuer
+from attestation.tokens import KeySealer, TokenIssuer, load_or_generate_signing_key
 from conftest import (
     BUNDLE_ID,
     CLIENT_ID,
     DEBUG_TOKEN,
     H,
     WOOSMAP_KEY,
+    make_settings,
     register,
     token_claims,
 )
@@ -22,19 +23,30 @@ from woozies_proxy.settings import ProxySettings
 
 NEARBY = "/localities/nearby?types=point_of_interest&location=19.13,72.93"
 SECRET = os.urandom(32)
-# Platform headers only: the key comes from the token.
-CALL_HEADERS = {**H, "X-iOS-Identifier": BUNDLE_ID}
+# What the app sends on API calls: no X-Api-Key, the key comes from the token.
+CALL_HEADERS = {"X-Client-Id": CLIENT_ID, "X-iOS-Identifier": BUNDLE_ID}
 
 
-def debug_token(client, api_key: str | None = WOOSMAP_KEY) -> str:
-    headers = {**H, "X-iOS-Identifier": BUNDLE_ID}
-    if api_key is not None:
-        headers["X-Api-Key"] = api_key
+def debug_token(client) -> str:
     resp = client.post(
-        "/attest/debug/token", headers=headers, json={"debug_token": DEBUG_TOKEN}
+        "/attest/debug/token",
+        headers={**H, "X-iOS-Identifier": BUNDLE_ID},
+        json={"debug_token": DEBUG_TOKEN},
     )
     assert resp.status_code == 200, resp.text
     return resp.json()["token"]
+
+
+def write_signing_key(tmp_path) -> str:
+    path = tmp_path / "signing-key.pem"
+    path.write_bytes(
+        ec.generate_private_key(ec.SECP256R1()).private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    return str(path)
 
 
 # KeySealer ------------------------------------------------------------------------
@@ -120,16 +132,31 @@ def test_sealed_key_wins_over_header(client, woosmap):
     assert woosmap.requests[-1].headers["X-Api-Key"] == WOOSMAP_KEY
 
 
-def test_token_without_key_still_needs_header(client, woosmap):
-    token = debug_token(client, api_key=None)
-    assert "ek" not in token_claims(token)
-    resp = client.get(NEARBY, headers={**CALL_HEADERS, "X-Woosmap-App-Token": token})
+def test_header_key_never_used(make_client, woosmap, tmp_path):
+    # A genuine token without a sealed key: the X-Api-Key header doesn't stand in for it.
+    signing_key = write_signing_key(tmp_path)
+    settings = make_settings(signing_key_path=signing_key)
+    token = TokenIssuer(
+        load_or_generate_signing_key(signing_key),
+        settings.signing_key_id,
+        settings.issuer,
+        settings.audience,
+    ).issue(
+        key=settings.key_config(), app=BUNDLE_ID, platform="ios",
+        method="debug", subject="s",
+    ).token
+    with make_client(signing_key_path=signing_key) as c:
+        resp = c.get(
+            NEARBY,
+            headers={**CALL_HEADERS, "X-Woosmap-App-Token": token, "X-Api-Key": "k"},
+        )
+    assert resp.status_code == 400
     assert resp.json() == {"error": "woosmap_key_missing"}
     assert woosmap.requests == []
 
 
 def test_app_attest_token_carries_sealed_key(client, apple, woosmap):
-    resp = register(client, apple.new_device(), api_key=WOOSMAP_KEY)
+    resp = register(client, apple.new_device())
     assert resp.status_code == 200, resp.text
     token = resp.json()["token"]
     assert client.get(
@@ -139,18 +166,11 @@ def test_app_attest_token_carries_sealed_key(client, apple, woosmap):
 
 
 def test_rotated_encryption_key_rejects_old_tokens(make_client, woosmap, tmp_path):
-    signing_key = tmp_path / "signing-key.pem"
-    signing_key.write_bytes(
-        ec.generate_private_key(ec.SECP256R1()).private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.PKCS8,
-            serialization.NoEncryption(),
-        )
-    )
+    signing_key = write_signing_key(tmp_path)
     old, new = (base64.b64encode(os.urandom(32)).decode() for _ in range(2))
-    with make_client(signing_key_path=str(signing_key), key_encryption_key=old) as c:
+    with make_client(signing_key_path=signing_key, key_encryption_key=old) as c:
         token = debug_token(c)
-    with make_client(signing_key_path=str(signing_key), key_encryption_key=new) as c:
+    with make_client(signing_key_path=signing_key, key_encryption_key=new) as c:
         resp = c.get(NEARBY, headers={**CALL_HEADERS, "X-Woosmap-App-Token": token})
     assert resp.status_code == 401
     assert resp.json() == {"error": "app_token_invalid"}

@@ -2,12 +2,13 @@
 
 The app proves it's genuine (App Attest, a debug token in the simulator, or
 Firebase App Check for apps that use it), receives a short-lived app token, and
-calls a Woosmap API path here, such as `GET /localities/nearby`, with its Woosmap
-key (X-Api-Key) and bundle ID (X-iOS-Identifier). The proxy checks the token and
-that the path is in ALLOWED_APIS, drops any key or private_key query parameter,
-and forwards the call with those two headers to https://api.woosmap.com/<path>.
-The proxy holds no Woosmap key. If the app sends X-Api-Key when it attests, the
-key travels encrypted inside the app token and the app can leave it off API calls.
+calls a Woosmap API path here, such as `GET /localities/nearby`, with its bundle
+ID (X-iOS-Identifier). The app sends its Woosmap key (X-Api-Key) only while it
+attests; the proxy seals it, encrypted, inside the app token. On each call the
+proxy checks the token and that the path is in ALLOWED_APIS, drops any key or
+private_key query parameter, and forwards the call with the key from the token
+and the bundle ID to https://api.woosmap.com/<path>. An X-Api-Key header on an
+API call is never used. The proxy holds no Woosmap key.
 
 One proxy serves every app in IOS_BUNDLE_IDS and ANDROID_PACKAGES. App Attest
 proofs are matched against each bundle ID; Android apps name their package in
@@ -166,6 +167,11 @@ def create_app(
             raise AttestationError("unknown_client", status=403)
         return found
 
+    def require_woosmap_key(x_api_key: str | None) -> None:
+        """Every app token carries the app's key, so attestation needs X-Api-Key."""
+        if not x_api_key:
+            raise AttestationError("woosmap_key_missing", status=400)
+
     @app.exception_handler(AttestationError)
     async def _attestation_error(_: Request, err: AttestationError):
         log.info("attestation_error code=%s detail=%s", err.code, err.detail)
@@ -186,6 +192,7 @@ def create_app(
         x_api_key: str | None = Header(None),
     ):
         cfg = client_for(x_client_id)
+        require_woosmap_key(x_api_key)
         if app_attest is None:
             raise AttestationError("app_attest_not_configured", status=503)
         # The app sends its Team ID; the attestation must match TEAMID.<one of IOS_BUNDLE_IDS>.
@@ -229,6 +236,7 @@ def create_app(
         x_api_key: str | None = Header(None),
     ):
         cfg = client_for(x_client_id)
+        require_woosmap_key(x_api_key)
         if app_attest is None:
             raise AttestationError("app_attest_not_configured", status=503)
         challenges.consume(body.challenge, x_client_id)
@@ -262,6 +270,7 @@ def create_app(
     ):
         """Simulator and CI only. Disabled unless ATTEST_DEBUG_TOKENS is set."""
         cfg = client_for(x_client_id)
+        require_woosmap_key(x_api_key)
         if body.debug_token not in settings.debug_tokens:
             raise AttestationError("debug_token_invalid")
         # The app names itself with its platform header; without one, the first iOS app.
@@ -294,6 +303,7 @@ def create_app(
     ):
         """Optional path for apps that use Firebase App Check (the Woozies app does not)."""
         cfg = client_for(x_client_id)
+        require_woosmap_key(x_api_key)
         if firebase_verifier is None:
             raise AttestationError("firebase_not_configured", status=503)
         app_id = firebase_verifier.verify(token=body.app_check_token, key=cfg)
@@ -321,6 +331,7 @@ def create_app(
         for that package, and the verdict must match it.
         """
         cfg = client_for(x_client_id)
+        require_woosmap_key(x_api_key)
         if play_integrity is None:
             raise AttestationError("play_integrity_not_configured", status=503)
         if not x_android_identifier:
@@ -396,19 +407,15 @@ def create_app(
         dropped = sorted(
             {n for n, _ in request.query_params.multi_items()} & set(DROPPED_PARAMS)
         )
-        # The app's Woosmap key: sealed in its token if it sent one while attesting,
-        # otherwise the X-Api-Key header. Only attested apps get this far.
+        # The app's Woosmap key comes only from its token, where it was sealed when the
+        # app attested; an X-Api-Key header is never used.
         claims = decision.claims or {}
         sealed_key = claims.get("ek")
-        app_key = (
-            sealer.open(sealed_key, claims.get("jti", ""))
-            if sealed_key
-            else request.headers.get("x-api-key")
-        )
-        if not app_key:
+        if not sealed_key:
             return JSONResponse(
                 status_code=400, content={"error": "woosmap_key_missing"}
             )
+        app_key = sealer.open(sealed_key, claims.get("jti", ""))
         if not (
             request.headers.get("x-ios-identifier")
             or request.headers.get("x-android-identifier")
@@ -425,13 +432,12 @@ def create_app(
         )
 
         log.info(
-            "api forward %s path=%s status=%s att=%s sub=%s key=%s params=%s dropped=%s headers=%s",
+            "api forward %s path=%s status=%s att=%s sub=%s params=%s dropped=%s headers=%s",
             request.method,
             api_path,
             decision.status,
             claims.get("att"),
             claims.get("sub"),
-            "sealed" if sealed_key else "header",
             params,
             dropped,
             captured,

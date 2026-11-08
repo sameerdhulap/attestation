@@ -7,7 +7,7 @@ import pytest
 
 from attestation.config import AttestationError, KeyConfig, Mode
 from attestation.play_integrity import PlayIntegrityVerifier
-from conftest import CLIENT_ID, H, WOOSMAP_KEY, get_challenge, token_claims
+from conftest import CLIENT_ID, H, get_challenge, token_claims
 
 PACKAGE = "com.woosmap.app.woozies"
 CERT = hashlib.sha256(b"release-cert").digest()
@@ -182,7 +182,6 @@ def test_android_token_exchanged_and_used(make_client, woosmap):
             headers={
                 **H,
                 "X-Woosmap-App-Token": resp.json()["token"],
-                "X-Api-Key": WOOSMAP_KEY,
                 "X-Android-Identifier": PACKAGE,
                 "X-Android-Fingerprint": SHA1,
             },
