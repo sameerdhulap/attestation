@@ -236,11 +236,20 @@ def token_claims(token: str) -> dict:
 
 
 def register(
-    client, device, team_id: str | None = TEAM_ID, bundle_id: str = BUNDLE_ID
+    client,
+    device,
+    team_id: str | None = TEAM_ID,
+    bundle_id: str = BUNDLE_ID,
+    api_key: str | None = None,
 ):
-    """Registers the device's App Attest key for bundle_id, sending team_id as X-Apple-Team-Id."""
+    """Registers the device's App Attest key for bundle_id, sending team_id as X-Apple-Team-Id.
+
+    With api_key, the app also sends its Woosmap key to be sealed into the token.
+    """
     challenge = get_challenge(client)
-    headers = {**H, "X-Apple-Team-Id": team_id} if team_id is not None else H
+    headers = {**H, "X-Apple-Team-Id": team_id} if team_id is not None else dict(H)
+    if api_key is not None:
+        headers["X-Api-Key"] = api_key
     return client.post(
         "/attest/ios/register",
         headers=headers,

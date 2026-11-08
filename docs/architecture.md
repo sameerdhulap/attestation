@@ -58,6 +58,16 @@ If the proof checks out, `TokenIssuer.issue` signs a token with these claims:
 | `att` | Attestation method, for example `app_attest` or `play_integrity` |
 | `sub` | Device or key identifier |
 | `exp` | Expiry time |
+| `ek` | The app's Woosmap key, encrypted (only when the app sent `X-Api-Key` while attesting) |
+
+### Sealed Woosmap key
+
+The token is signed, not encrypted, so anyone holding it can read its claims. To carry the app's key, the proxy encrypts it with AES-256-GCM (`KeySealer` in `tokens.py`) before adding it as `ek`:
+
+- The secret is `ATTEST_ENCRYPTION_KEY`: 32 bytes, base64. Without it the proxy makes a new one on every start, which invalidates tokens that carry a key.
+- Each sealed key is bound to its token's `jti`, so it can't be moved to another token.
+- The app sends `X-Api-Key` only to the `/attest/*` endpoints. API calls carry just the token.
+- Tokens issued without a key still work. The proxy falls back to the `X-Api-Key` header on each call.
 
 ### Several apps
 
@@ -78,7 +88,7 @@ flowchart TD
     D -- no --> R3[401 app_token_invalid / revoked]
     D -- yes --> E{4. Path in ALLOWED_APIS?}
     E -- no --> R4[404 api_not_allowed]
-    E -- yes --> F{5. X-Api-Key and app identifier?}
+    E -- yes --> F{5. Woosmap key and app identifier?<br/>sealed in token, or X-Api-Key}
     F -- no --> R5[400 woosmap_key_missing / app_identifier_missing]
     F -- yes --> G[6. Forward to api.woosmap.com]
     G --> H{Woosmap 401/403?}
@@ -92,7 +102,7 @@ flowchart TD
 | 2 | `TokenVerifier.verify` | Signature, `kid`, issuer, audience, expiry, required claims |
 | 3 | `AppTokenGate._check` | Token client equals `X-Client-Id`; app still allowed (skipped for debug tokens); client, app and device not denied |
 | 4 | `woosmap_api` | Exact match against `ALLOWED_APIS` |
-| 5 | `woosmap_api` | `X-Api-Key`, plus `X-iOS-Identifier` or `X-Android-Identifier` |
+| 5 | `woosmap_api` | The key sealed in the token (ignoring any `X-Api-Key` header), otherwise `X-Api-Key`; plus `X-iOS-Identifier` or `X-Android-Identifier`. A sealed key that won't decrypt gives `401 app_token_invalid`. |
 | 6 | `woosmap_api` | Drops `key` and `private_key` from the query string, then forwards the key, platform headers, `Accept-Language`, and for POST the body |
 
 `ATTEST_MODE` controls steps 1–3:
@@ -140,10 +150,11 @@ Calls to third parties per token. Calls from the app to the proxy are listed sep
 
 | Limitation | Impact | Fix |
 | --- | --- | --- |
-| The proxy forwards the key the app sends | The key ships in the app; anyone who extracts it can call Woosmap directly with the identifier header, skipping the proxy | The proxy holds an IP-restricted server key, and the apps ship none |
+| The key comes from the app | Sealing keeps it off API calls, but it still ships in the app; anyone who extracts it can call Woosmap directly with the identifier header, skipping the proxy | The proxy holds an IP-restricted server key, and the apps ship none |
+| `ATTEST_ENCRYPTION_KEY` unlocks every sealed key | Whoever has it can read the key from any captured token | Keep it with the signing key, ideally in a KMS |
 | The token's `app` isn't checked against the identifier header | A token earned by app A can be sent with app B's headers | Compare `app` with `X-iOS-Identifier` / `X-Android-Identifier` at step 5 |
 | The proxy trusts the Team ID the app sends | Attestation proves *some* team signed the bundle ID | Safe while the bundle ID is registered to your team; otherwise configure the Team ID |
 | State is in memory | Restarts lose App Attest keys, challenges and the deny list; several instances can't share it | Redis for challenges, a database for keys and the deny list |
 | Nothing fills the deny list | Tokens can't be revoked early | An admin endpoint backed by shared storage |
-| No `ATTEST_SIGNING_KEY` means a new key on every start | A restart invalidates every token, and instances reject each other's tokens | Set a persistent signing key |
+| No `ATTEST_SIGNING_KEY` or `ATTEST_ENCRYPTION_KEY` means a new key on every start | A restart invalidates every token, and instances reject each other's tokens | Set both persistently |
 | Not tested on real devices | App Attest and Play Integrity are covered by tests with fakes and by simulator/emulator debug tokens only | Test on hardware; for Play Integrity, install from a Play testing track |

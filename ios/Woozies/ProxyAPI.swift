@@ -90,6 +90,8 @@ struct ProxyAPI {
         request.setValue(clientId, forHTTPHeaderField: "X-Client-Id")
         // Tells a proxy serving several apps which one this is.
         request.setValue(Bundle.main.bundleIdentifier, forHTTPHeaderField: "X-iOS-Identifier")
+        // Sent only while attesting: the proxy seals it into the app token.
+        request.setValue(AppConfig.woosmapAPIKey, forHTTPHeaderField: "X-Api-Key")
         for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
         request.httpBody = try JSONEncoder().encode(body)
         let (data, response) = try await session.data(for: request)

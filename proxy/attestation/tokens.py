@@ -1,8 +1,11 @@
 """Woosmap app tokens: short-lived ES256 JWTs issued after a successful attestation."""
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import logging
+import os
 import secrets
 import time
 from dataclasses import dataclass
@@ -10,8 +13,10 @@ from pathlib import Path
 from typing import Callable
 
 import jwt
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .config import AttestationError, KeyConfig
 
@@ -34,6 +39,49 @@ def load_or_generate_signing_key(path: str | None) -> ec.EllipticCurvePrivateKey
     return ec.generate_private_key(ec.SECP256R1())
 
 
+class KeySealer:
+    """Encrypts the app's Woosmap key into its app token (AES-256-GCM).
+
+    The token's payload is only base64, so a plain claim would be readable by
+    anyone holding the token. Each sealed key is bound to its token's `jti`.
+    """
+
+    NONCE_BYTES = 12
+
+    def __init__(self, secret: bytes):
+        if len(secret) != 32:
+            raise ValueError("Key encryption secret must be 32 bytes")
+        self._aead = AESGCM(secret)
+
+    @classmethod
+    def from_setting(cls, value: str | None) -> "KeySealer":
+        """Build from a base64 (or base64url) 32-byte secret, or generate a throwaway one."""
+        if not value:
+            log.warning(
+                "No ATTEST_ENCRYPTION_KEY set: generating an ephemeral key (dev only)"
+            )
+            return cls(AESGCM.generate_key(bit_length=256))
+        normalized = value.strip().replace("-", "+").replace("_", "/")
+        try:
+            secret = base64.b64decode(normalized + "=" * (-len(normalized) % 4), validate=True)
+        except binascii.Error as exc:
+            raise ValueError("ATTEST_ENCRYPTION_KEY must be base64") from exc
+        return cls(secret)
+
+    def seal(self, value: str, token_id: str) -> str:
+        nonce = os.urandom(self.NONCE_BYTES)
+        sealed = nonce + self._aead.encrypt(nonce, value.encode(), token_id.encode())
+        return base64.urlsafe_b64encode(sealed).rstrip(b"=").decode()
+
+    def open(self, sealed: str, token_id: str) -> str:
+        try:
+            raw = base64.urlsafe_b64decode(sealed + "=" * (-len(sealed) % 4))
+            nonce, ciphertext = raw[: self.NONCE_BYTES], raw[self.NONCE_BYTES :]
+            return self._aead.decrypt(nonce, ciphertext, token_id.encode()).decode()
+        except (InvalidTag, ValueError) as exc:
+            raise AttestationError("app_token_invalid", "sealed key unreadable") from exc
+
+
 @dataclass(frozen=True)
 class IssuedToken:
     token: str
@@ -43,15 +91,19 @@ class IssuedToken:
 
 class TokenIssuer:
     def __init__(self, private_key: ec.EllipticCurvePrivateKey, kid: str,
-                 issuer: str, audience: str, clock: Callable[[], float] = time.time):
+                 issuer: str, audience: str, clock: Callable[[], float] = time.time,
+                 sealer: KeySealer | None = None):
         self._key = private_key
         self.kid = kid
         self.issuer = issuer
         self.audience = audience
         self._clock = clock
+        self._sealer = sealer
 
     def issue(self, *, key: KeyConfig, app: str, platform: str, method: str,
-              subject: str, level: str = "device") -> IssuedToken:
+              subject: str, level: str = "device",
+              woosmap_key: str | None = None) -> IssuedToken:
+        """Sign an app token; `woosmap_key`, if given, travels sealed in the `ek` claim."""
         now = int(self._clock())
         claims = {
             "iss": self.issuer,
@@ -67,6 +119,10 @@ class TokenIssuer:
             "exp": now + key.token_ttl_seconds,
             "jti": secrets.token_hex(12),
         }
+        if woosmap_key:
+            if self._sealer is None:
+                raise ValueError("A KeySealer is needed to put a Woosmap key in a token")
+            claims["ek"] = self._sealer.seal(woosmap_key, claims["jti"])
         token = jwt.encode(claims, self._key, algorithm=ALGORITHM, headers={"kid": self.kid})
         return IssuedToken(token=token, expires_in=key.token_ttl_seconds, claims=claims)
 

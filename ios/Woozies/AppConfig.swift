@@ -7,7 +7,7 @@ enum AppConfig {
         return URL(string: value ?? "http://localhost:8000")!
     }()
 
-    /// Woosmap key, forwarded by the proxy as X-Api-Key. Set `WOOSMAP_API_KEY` in Config/Secrets.xcconfig.
+    /// Woosmap key, sent while attesting; the proxy seals it into the app token. Set `WOOSMAP_API_KEY` in Config/Secrets.xcconfig.
     static let woosmapAPIKey: String? = {
         let value = Bundle.main.object(forInfoDictionaryKey: "WoosmapAPIKey") as? String
         return value?.isEmpty == false ? value : nil

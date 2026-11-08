@@ -72,6 +72,8 @@ class ProxyApi(private val baseUrl: String = AppConfig.proxyBaseUrl) {
             connection.setRequestProperty("X-Client-Id", AppConfig.CLIENT_ID)
             // Tells a proxy serving several apps which one this is; Play Integrity is checked for it.
             connection.setRequestProperty("X-Android-Identifier", BuildConfig.APPLICATION_ID)
+            // Sent only while attesting: the proxy seals it into the app token.
+            AppConfig.woosmapApiKey?.let { connection.setRequestProperty("X-Api-Key", it) }
             connection.outputStream.use { it.write(body.toString().toByteArray()) }
             JSONObject(connection.readBody())
         } finally {

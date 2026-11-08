@@ -6,7 +6,8 @@ calls a Woosmap API path here, such as `GET /localities/nearby`, with its Woosma
 key (X-Api-Key) and bundle ID (X-iOS-Identifier). The proxy checks the token and
 that the path is in ALLOWED_APIS, drops any key or private_key query parameter,
 and forwards the call with those two headers to https://api.woosmap.com/<path>.
-The proxy holds no Woosmap key.
+The proxy holds no Woosmap key. If the app sends X-Api-Key when it attests, the
+key travels encrypted inside the app token and the app can leave it off API calls.
 
 One proxy serves every app in IOS_BUNDLE_IDS and ANDROID_PACKAGES. App Attest
 proofs are matched against each bundle ID; Android apps name their package in
@@ -39,6 +40,7 @@ from attestation.play_integrity import GooglePlayDecoder, PlayIntegrityVerifier
 from attestation.store import ChallengeService, InMemoryStore
 from attestation.tokens import (
     IssuedToken,
+    KeySealer,
     TokenIssuer,
     TokenVerifier,
     load_or_generate_signing_key,
@@ -116,11 +118,13 @@ def create_app(
     registry = KeyRegistry([key])
     store = InMemoryStore()
     challenges = ChallengeService(store)
+    sealer = KeySealer.from_setting(settings.key_encryption_key)
     issuer = TokenIssuer(
         load_or_generate_signing_key(settings.signing_key_path),
         settings.signing_key_id,
         settings.issuer,
         settings.audience,
+        sealer=sealer,
     )
     gate = AppTokenGate(
         TokenVerifier.from_jwks(issuer.public_jwks(), issuer.issuer, issuer.audience),
@@ -179,6 +183,7 @@ def create_app(
         body: IosRegisterBody,
         x_client_id: str = Header(...),
         x_apple_team_id: str | None = Header(None),
+        x_api_key: str | None = Header(None),
     ):
         cfg = client_for(x_client_id)
         if app_attest is None:
@@ -209,6 +214,7 @@ def create_app(
         return _token_body(
             issuer.issue(
                 key=cfg,
+                woosmap_key=x_api_key,
                 app=_bundle_id(record.app_id),
                 platform="ios",
                 method="app_attest",
@@ -217,7 +223,11 @@ def create_app(
         )
 
     @app.post("/attest/ios/token")
-    def ios_token(body: IosTokenBody, x_client_id: str = Header(...)):
+    def ios_token(
+        body: IosTokenBody,
+        x_client_id: str = Header(...),
+        x_api_key: str | None = Header(None),
+    ):
         cfg = client_for(x_client_id)
         if app_attest is None:
             raise AttestationError("app_attest_not_configured", status=503)
@@ -234,6 +244,7 @@ def create_app(
         return _token_body(
             issuer.issue(
                 key=cfg,
+                woosmap_key=x_api_key,
                 app=_bundle_id(record.app_id),
                 platform="ios",
                 method="app_attest",
@@ -247,6 +258,7 @@ def create_app(
         x_client_id: str = Header(...),
         x_ios_identifier: str | None = Header(None),
         x_android_identifier: str | None = Header(None),
+        x_api_key: str | None = Header(None),
     ):
         """Simulator and CI only. Disabled unless ATTEST_DEBUG_TOKENS is set."""
         cfg = client_for(x_client_id)
@@ -266,6 +278,7 @@ def create_app(
         return _token_body(
             issuer.issue(
                 key=cfg,
+                woosmap_key=x_api_key,
                 app=app_id,
                 platform=platform,
                 method="debug",
@@ -274,7 +287,11 @@ def create_app(
         )
 
     @app.post("/attest/firebase/token")
-    def firebase_token(body: FirebaseTokenBody, x_client_id: str = Header(...)):
+    def firebase_token(
+        body: FirebaseTokenBody,
+        x_client_id: str = Header(...),
+        x_api_key: str | None = Header(None),
+    ):
         """Optional path for apps that use Firebase App Check (the Woozies app does not)."""
         cfg = client_for(x_client_id)
         if firebase_verifier is None:
@@ -283,6 +300,7 @@ def create_app(
         return _token_body(
             issuer.issue(
                 key=cfg,
+                woosmap_key=x_api_key,
                 app=app_id,
                 platform=platform_from_app_id(app_id),
                 method="firebase_app_check",
@@ -295,6 +313,7 @@ def create_app(
         body: AndroidTokenBody,
         x_client_id: str = Header(...),
         x_android_identifier: str | None = Header(None),
+        x_api_key: str | None = Header(None),
     ):
         """Android: the app requests a Play Integrity token with the challenge as its nonce.
 
@@ -322,6 +341,7 @@ def create_app(
         return _token_body(
             issuer.issue(
                 key=cfg,
+                woosmap_key=x_api_key,
                 app=x_android_identifier,
                 platform="android",
                 method="play_integrity",
@@ -376,8 +396,15 @@ def create_app(
         dropped = sorted(
             {n for n, _ in request.query_params.multi_items()} & set(DROPPED_PARAMS)
         )
-        # The app sends its own Woosmap key and bundle ID; only attested apps get this far.
-        app_key = request.headers.get("x-api-key")
+        # The app's Woosmap key: sealed in its token if it sent one while attesting,
+        # otherwise the X-Api-Key header. Only attested apps get this far.
+        claims = decision.claims or {}
+        sealed_key = claims.get("ek")
+        app_key = (
+            sealer.open(sealed_key, claims.get("jti", ""))
+            if sealed_key
+            else request.headers.get("x-api-key")
+        )
         if not app_key:
             return JSONResponse(
                 status_code=400, content={"error": "woosmap_key_missing"}
@@ -397,14 +424,14 @@ def create_app(
             {h: request.headers[h] for h in FORWARDED_HEADERS if h in request.headers}
         )
 
-        claims = decision.claims or {}
         log.info(
-            "api forward %s path=%s status=%s att=%s sub=%s params=%s dropped=%s headers=%s",
+            "api forward %s path=%s status=%s att=%s sub=%s key=%s params=%s dropped=%s headers=%s",
             request.method,
             api_path,
             decision.status,
             claims.get("att"),
             claims.get("sub"),
+            "sealed" if sealed_key else "header",
             params,
             dropped,
             captured,

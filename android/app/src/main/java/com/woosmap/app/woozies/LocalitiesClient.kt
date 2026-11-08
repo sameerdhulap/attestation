@@ -9,7 +9,7 @@ import java.security.MessageDigest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** Calls Localities Nearby through the proxy, attaching the app token and Android identifiers. */
+/** Calls Localities Nearby through the proxy, attaching the app token (which carries the Woosmap key) and Android identifiers. */
 class LocalitiesClient(context: Context, private val attestation: AttestationService) {
     private val packageName = context.packageName
     private val fingerprint = signingSha1(context)
@@ -38,7 +38,6 @@ class LocalitiesClient(context: Context, private val attestation: AttestationSer
             try {
                 connection.setRequestProperty("X-Woosmap-App-Token", token)
                 connection.setRequestProperty("X-Client-Id", AppConfig.CLIENT_ID)
-                AppConfig.woosmapApiKey?.let { connection.setRequestProperty("X-Api-Key", it) }
                 connection.setRequestProperty("X-Android-Identifier", packageName)
                 fingerprint?.let { connection.setRequestProperty("X-Android-Fingerprint", it) }
                 connection.setRequestProperty("X-App-Version", AppConfig.APP_VERSION)
