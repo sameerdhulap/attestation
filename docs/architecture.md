@@ -76,6 +76,44 @@ One proxy serves every app listed in `IOS_BUNDLE_IDS`, `ANDROID_PACKAGES` and `F
 - **iOS:** the attestation is matched against each listed bundle ID, so the app doesn't need to say which it is.
 - **Android:** the app names its package in `X-Android-Identifier`, and Google decodes the token for that package.
 
+### iOS call sequence
+
+How often an iPhone calls `/attest/challenge`, `/attest/ios/register` and `/attest/ios/token` (logic in `ios/Woozies/AttestationService.swift`).
+
+**A first-time user** (no App Attest key in the keychain) makes two attestation calls, once each, before the first search:
+
+```mermaid
+sequenceDiagram
+    participant App as iPhone app
+    participant Apple
+    participant Proxy
+    App->>App: generateKey (Secure Enclave, no network)
+    App->>Proxy: POST /attest/challenge
+    Proxy-->>App: challenge
+    App->>Apple: attestKey(key, SHA-256 of challenge)
+    Apple-->>App: attestation
+    App->>Proxy: POST /attest/ios/register
+    Proxy-->>App: app token (sealed Woosmap key)
+    App->>Proxy: GET /localities/nearby + X-Woosmap-App-Token
+```
+
+`/attest/ios/token` isn't called for a first-time user. It's only used once a key is registered.
+
+**After that:**
+
+| Situation | Calls | `challenge` | `ios/register` | `ios/token` |
+| --- | --- | --- | --- | --- |
+| First-time user | `challenge`, `register` | 1 | 1 | 0 |
+| Search within ~24 min of getting the token | Search only | 0 | 0 | 0 |
+| Search after ~24 min (refresh at 80% of the 30-min lifetime) | `challenge`, `ios/token` | 1 | 0 | 1 |
+| Proxy restarted (keys and signing key are in memory) | Search gets 401; `challenge`, `ios/token` gets 401 `app_attest_unknown_key`; `challenge`, `register` | 2 | 1 | 1 |
+| Device rejects the stored key (`DCError` `invalidKey` or `invalidInput`) | `challenge` (assertion fails on the device); `challenge`, `register` | 2 | 1 | 0 |
+| User taps **Reset App Attest key** | As a first-time user | 1 | 1 | 0 |
+
+Per user, `register` should happen once per install, and `challenge` with `ios/token` once per ~24 minutes of use. Many `register` calls compared with `ios/token` point to a problem: proxy restarts, or assertions failing on devices.
+
+A reinstall isn't necessarily a first-time user. The key ID is saved with `ThisDeviceOnly` and isn't backed up, but the keychain item can survive deleting and reinstalling the app. In that case the reinstall starts with `ios/token`, and falls back to `register` only if the key is rejected.
+
 ## Validating an API call
 
 ```mermaid
