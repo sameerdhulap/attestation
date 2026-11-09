@@ -14,7 +14,7 @@ from .tokens import TokenVerifier
 
 log = logging.getLogger(__name__)
 
-HEADER_APP_TOKEN = "x-woosmap-app-token"
+HEADER_APP_TOKEN = "x-app-token"
 
 
 @dataclass(frozen=True)

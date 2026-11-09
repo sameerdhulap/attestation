@@ -69,8 +69,9 @@ actor AttestationService {
                 return fresh
             } catch let error as ProxyError where error.code == "app_attest_unknown_key" {
                 keyStore.delete()   // the proxy no longer knows this key: register a new one
-            } catch let error as DCError where error.code == .invalidKey {
-                keyStore.delete()   // the key was invalidated on the device: register a new one
+            } catch let error as AttestationStepError
+                        where [.invalidKey, .invalidInput].contains(error.code) {
+                keyStore.delete()   // the device rejected the stored key: register a new one
             }
         }
         let fresh = try await register(service: service)
@@ -79,9 +80,11 @@ actor AttestationService {
     }
 
     private func register(service: DCAppAttestService) async throws -> AppToken {
-        let keyId = try await service.generateKey()
+        let keyId = try await step("generateKey") { try await service.generateKey() }
         let challenge = try await api.challenge()
-        let attestation = try await service.attestKey(keyId, clientDataHash: Self.hash(challenge))
+        let attestation = try await step("attestKey") {
+            try await service.attestKey(keyId, clientDataHash: Self.hash(challenge))
+        }
         let fresh = try await api.registerKey(keyId: keyId, attestation: attestation, challenge: challenge)
         keyStore.save(keyId)
         return fresh
@@ -89,13 +92,44 @@ actor AttestationService {
 
     private func refresh(keyId: String, service: DCAppAttestService) async throws -> AppToken {
         let challenge = try await api.challenge()
-        let assertion = try await service.generateAssertion(keyId, clientDataHash: Self.hash(challenge))
+        let assertion = try await step("generateAssertion") {
+            try await service.generateAssertion(keyId, clientDataHash: Self.hash(challenge))
+        }
         return try await api.refreshToken(keyId: keyId, assertion: assertion, challenge: challenge)
+    }
+
+    /// Runs one DeviceCheck call, naming it in any DCError so failures say which step broke.
+    private func step<T>(_ name: String, _ call: () async throws -> T) async throws -> T {
+        do {
+            return try await call()
+        } catch let error as DCError {
+            throw AttestationStepError(step: name, code: error.code)
+        }
     }
 
     /// The proxy verifies against SHA-256 of the UTF-8 challenge string.
     private static func hash(_ challenge: String) -> Data {
         Data(SHA256.hash(data: Data(challenge.utf8)))
+    }
+}
+
+/// A DeviceCheck error, with the App Attest call that raised it.
+struct AttestationStepError: LocalizedError {
+    let step: String
+    let code: DCError.Code
+
+    var errorDescription: String? {
+        "App Attest \(step) failed: DCError \(code.rawValue) (\(Self.name(code)))."
+    }
+
+    private static func name(_ code: DCError.Code) -> String {
+        switch code {
+        case .featureUnsupported: return "feature unsupported"
+        case .invalidInput: return "invalid input"
+        case .invalidKey: return "invalid key"
+        case .serverUnavailable: return "server unavailable"
+        default: return "unknown system failure"
+        }
     }
 }
 

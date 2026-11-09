@@ -29,7 +29,8 @@ BUNDLE_ID = "com.woosmap.app.woozies"
 APP_ID = f"{TEAM_ID}.{BUNDLE_ID}"
 WOOSMAP_KEY = "test-app-key"
 DEBUG_TOKEN = "debug-123"
-H = {"X-Client-Id": CLIENT_ID}
+# Sent on attestation calls: the proxy seals the app's key into the app token.
+H = {"X-Client-Id": CLIENT_ID, "X-Api-Key": WOOSMAP_KEY}
 
 
 def _name(cn: str) -> x509.Name:
@@ -236,7 +237,10 @@ def token_claims(token: str) -> dict:
 
 
 def register(
-    client, device, team_id: str | None = TEAM_ID, bundle_id: str = BUNDLE_ID
+    client,
+    device,
+    team_id: str | None = TEAM_ID,
+    bundle_id: str = BUNDLE_ID,
 ):
     """Registers the device's App Attest key for bundle_id, sending team_id as X-Apple-Team-Id."""
     challenge = get_challenge(client)

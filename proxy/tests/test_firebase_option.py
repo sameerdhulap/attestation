@@ -4,7 +4,7 @@ import jwt
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from attestation.firebase_app_check import FirebaseAppCheckVerifier
-from conftest import BUNDLE_ID, H, WOOSMAP_KEY
+from conftest import BUNDLE_ID, H
 
 PROJECT = "123456789012"
 APP_ID = "1:123456789012:ios:abc123"
@@ -47,8 +47,7 @@ def test_firebase_token_exchanged_and_accepted(make_client):
             "/localities/nearby?types=point_of_interest&location=1,2",
             headers={
                 **H,
-                "X-Woosmap-App-Token": resp.json()["token"],
-                "X-Api-Key": WOOSMAP_KEY,
+                "X-App-Token": resp.json()["token"],
                 "X-iOS-Identifier": BUNDLE_ID,
             },
         )

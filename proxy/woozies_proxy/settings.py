@@ -58,6 +58,8 @@ class ProxySettings:
     apple_root_ca_path: str | None = None
     signing_key_path: str | None = None
     signing_key_id: str = "woozies-1"
+    # Base64 32-byte secret that seals the app's Woosmap key into its app token
+    key_encryption_key: str | None = None
     issuer: str = "https://woozies-proxy.local"
     audience: str = "woozies-proxy"
     token_ttl_seconds: int = 1800
@@ -105,6 +107,7 @@ class ProxySettings:
             or (str(default_root) if default_root.exists() else None),
             signing_key_path=os.getenv("ATTEST_SIGNING_KEY") or None,
             signing_key_id=os.getenv("ATTEST_SIGNING_KID", cls.signing_key_id),
+            key_encryption_key=os.getenv("ATTEST_ENCRYPTION_KEY") or None,
             token_ttl_seconds=int(os.getenv("TOKEN_TTL_SECONDS", "1800")),
             debug_tokens=_csv(os.getenv("ATTEST_DEBUG_TOKENS")),
             firebase_project_number=os.getenv("FIREBASE_PROJECT_NUMBER") or None,

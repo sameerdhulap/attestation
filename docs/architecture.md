@@ -58,6 +58,16 @@ If the proof checks out, `TokenIssuer.issue` signs a token with these claims:
 | `att` | Attestation method, for example `app_attest` or `play_integrity` |
 | `sub` | Device or key identifier |
 | `exp` | Expiry time |
+| `ek` | The app's Woosmap key, encrypted |
+
+### Sealed Woosmap key
+
+The token is signed, not encrypted, so anyone holding it can read its claims. To carry the app's key, the proxy encrypts it with AES-256-GCM (`KeySealer` in `tokens.py`) before adding it as `ek`:
+
+- The secret is `ATTEST_ENCRYPTION_KEY`: 32 bytes, base64. Without it the proxy makes a new one on every start, which invalidates tokens that carry a key.
+- Each sealed key is bound to its token's `jti`, so it can't be moved to another token.
+- The app sends `X-Api-Key` only to the `/attest/*` endpoints. Without it, attestation returns `400 woosmap_key_missing`, so every token carries a key.
+- API calls carry just the token. The proxy never uses an `X-Api-Key` header on an API call.
 
 ### Several apps
 
@@ -65,6 +75,44 @@ One proxy serves every app listed in `IOS_BUNDLE_IDS`, `ANDROID_PACKAGES` and `F
 
 - **iOS:** the attestation is matched against each listed bundle ID, so the app doesn't need to say which it is.
 - **Android:** the app names its package in `X-Android-Identifier`, and Google decodes the token for that package.
+
+### iOS call sequence
+
+How often an iPhone calls `/attest/challenge`, `/attest/ios/register` and `/attest/ios/token` (logic in `ios/Woozies/AttestationService.swift`).
+
+**A first-time user** (no App Attest key in the keychain) makes two attestation calls, once each, before the first search:
+
+```mermaid
+sequenceDiagram
+    participant App as iPhone app
+    participant Apple
+    participant Proxy
+    App->>App: generateKey (Secure Enclave, no network)
+    App->>Proxy: POST /attest/challenge
+    Proxy-->>App: challenge
+    App->>Apple: attestKey(key, SHA-256 of challenge)
+    Apple-->>App: attestation
+    App->>Proxy: POST /attest/ios/register
+    Proxy-->>App: app token (sealed Woosmap key)
+    App->>Proxy: GET /localities/nearby + X-App-Token
+```
+
+`/attest/ios/token` isn't called for a first-time user. It's only used once a key is registered.
+
+**After that:**
+
+| Situation | Calls | `challenge` | `ios/register` | `ios/token` |
+| --- | --- | --- | --- | --- |
+| First-time user | `challenge`, `register` | 1 | 1 | 0 |
+| Search within ~24 min of getting the token | Search only | 0 | 0 | 0 |
+| Search after ~24 min (refresh at 80% of the 30-min lifetime) | `challenge`, `ios/token` | 1 | 0 | 1 |
+| Proxy restarted (keys and signing key are in memory) | Search gets 401; `challenge`, `ios/token` gets 401 `app_attest_unknown_key`; `challenge`, `register` | 2 | 1 | 1 |
+| Device rejects the stored key (`DCError` `invalidKey` or `invalidInput`) | `challenge` (assertion fails on the device); `challenge`, `register` | 2 | 1 | 0 |
+| User taps **Reset App Attest key** | As a first-time user | 1 | 1 | 0 |
+
+Per user, `register` should happen once per install, and `challenge` with `ios/token` once per ~24 minutes of use. Many `register` calls compared with `ios/token` point to a problem: proxy restarts, or assertions failing on devices.
+
+A reinstall isn't necessarily a first-time user. The key ID is saved with `ThisDeviceOnly` and isn't backed up, but the keychain item can survive deleting and reinstalling the app. In that case the reinstall starts with `ios/token`, and falls back to `register` only if the key is rejected.
 
 ## Validating an API call
 
@@ -78,7 +126,7 @@ flowchart TD
     D -- no --> R3[401 app_token_invalid / revoked]
     D -- yes --> E{4. Path in ALLOWED_APIS?}
     E -- no --> R4[404 api_not_allowed]
-    E -- yes --> F{5. X-Api-Key and app identifier?}
+    E -- yes --> F{5. Sealed key in token<br/>and app identifier?}
     F -- no --> R5[400 woosmap_key_missing / app_identifier_missing]
     F -- yes --> G[6. Forward to api.woosmap.com]
     G --> H{Woosmap 401/403?}
@@ -92,7 +140,7 @@ flowchart TD
 | 2 | `TokenVerifier.verify` | Signature, `kid`, issuer, audience, expiry, required claims |
 | 3 | `AppTokenGate._check` | Token client equals `X-Client-Id`; app still allowed (skipped for debug tokens); client, app and device not denied |
 | 4 | `woosmap_api` | Exact match against `ALLOWED_APIS` |
-| 5 | `woosmap_api` | `X-Api-Key`, plus `X-iOS-Identifier` or `X-Android-Identifier` |
+| 5 | `woosmap_api` | The key sealed in the token (never an `X-Api-Key` header), plus `X-iOS-Identifier` or `X-Android-Identifier`. A sealed key that won't decrypt gives `401 app_token_invalid`. |
 | 6 | `woosmap_api` | Drops `key` and `private_key` from the query string, then forwards the key, platform headers, `Accept-Language`, and for POST the body |
 
 `ATTEST_MODE` controls steps 1–3:
@@ -100,8 +148,10 @@ flowchart TD
 | Mode | Steps 1–3 |
 | --- | --- |
 | `enforce` | A failure is rejected |
-| `monitor` | A failure is logged, and the call is forwarded anyway |
+| `monitor` | A failure is logged, and the call continues |
 | `off` | The checks are skipped |
+
+The key comes only from a valid token, so in `monitor` and `off` modes a call without one still stops at step 5 with `400 woosmap_key_missing`. These modes no longer let apps that don't attest reach Woosmap.
 
 When the app gets an `app_token_*` 401, it attests again once and retries the call.
 
@@ -140,10 +190,11 @@ Calls to third parties per token. Calls from the app to the proxy are listed sep
 
 | Limitation | Impact | Fix |
 | --- | --- | --- |
-| The proxy forwards the key the app sends | The key ships in the app; anyone who extracts it can call Woosmap directly with the identifier header, skipping the proxy | The proxy holds an IP-restricted server key, and the apps ship none |
+| The key comes from the app | Sealing keeps it off API calls, but it still ships in the app; anyone who extracts it can call Woosmap directly with the identifier header, skipping the proxy | The proxy holds an IP-restricted server key, and the apps ship none |
+| `ATTEST_ENCRYPTION_KEY` unlocks every sealed key | Whoever has it can read the key from any captured token | Keep it with the signing key, ideally in a KMS |
 | The token's `app` isn't checked against the identifier header | A token earned by app A can be sent with app B's headers | Compare `app` with `X-iOS-Identifier` / `X-Android-Identifier` at step 5 |
 | The proxy trusts the Team ID the app sends | Attestation proves *some* team signed the bundle ID | Safe while the bundle ID is registered to your team; otherwise configure the Team ID |
 | State is in memory | Restarts lose App Attest keys, challenges and the deny list; several instances can't share it | Redis for challenges, a database for keys and the deny list |
 | Nothing fills the deny list | Tokens can't be revoked early | An admin endpoint backed by shared storage |
-| No `ATTEST_SIGNING_KEY` means a new key on every start | A restart invalidates every token, and instances reject each other's tokens | Set a persistent signing key |
+| No `ATTEST_SIGNING_KEY` or `ATTEST_ENCRYPTION_KEY` means a new key on every start | A restart invalidates every token, and instances reject each other's tokens | Set both persistently |
 | Not tested on real devices | App Attest and Play Integrity are covered by tests with fakes and by simulator/emulator debug tokens only | Test on hardware; for Play Integrity, install from a Play testing track |

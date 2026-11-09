@@ -5,7 +5,7 @@ object AppConfig {
     /** Where the attestation proxy runs. */
     val proxyBaseUrl: String = BuildConfig.PROXY_BASE_URL.trimEnd('/')
 
-    /** Woosmap key, forwarded by the proxy as X-Api-Key. */
+    /** Woosmap key, sent while attesting; the proxy seals it into the app token. */
     val woosmapApiKey: String? = BuildConfig.WOOSMAP_API_KEY.ifEmpty { null }
 
     /** Identifies this app to the proxy. Not a secret; it must match CLIENT_ID in the proxy. */

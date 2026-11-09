@@ -2,17 +2,18 @@
 
 This example shows how an iOS app can call the Localities Nearby API through a proxy that only answers the genuine app.
 
-The app proves it's the genuine, unmodified Woozies app using Apple App Attest. A small Python proxy verifies that proof, then forwards the call, with the Woosmap key (`X-Api-Key`) and bundle ID (`X-iOS-Identifier`) the app sent, to `https://api.woosmap.com/localities/nearby`. Other Woosmap APIs can go through the same proxy once they're added to its allow-list. The proxy holds no Woosmap key. Calling the proxy with copied headers gets an attacker nothing, because it only answers apps holding a valid app token, and only App Attest can produce one.
+The app proves it's the genuine, unmodified Woozies app using Apple App Attest. A small Python proxy verifies that proof, then forwards the call, with the Woosmap key and bundle ID (`X-iOS-Identifier`) the app sent, to `https://api.woosmap.com/localities/nearby`. Other Woosmap APIs can go through the same proxy once they're added to its allow-list. The proxy holds no Woosmap key: the app sends its key once, while attesting, and the proxy seals it, encrypted, inside the app token. Calling the proxy with copied headers gets an attacker nothing, because it only answers apps holding a valid app token, and only App Attest can produce one.
 
 ```
 iOS app (com.woosmap.app.woozies)            Python proxy                         Woosmap
   1. POST /attest/challenge  ─────────────▶  issues a one-time challenge
   2. App Attest proof        ─────────────▶  verifies with Apple's root CA
      + X-Apple-Team-Id                        against TEAMID.bundle ID
+     + X-Api-Key                              and seals the key in the token
                               ◀─────────────  short-lived app token
   3. GET /localities/nearby  ─────────────▶  checks token and ALLOWED_APIS,
-     + X-Woosmap-App-Token                    forwards X-Api-Key and
-     + X-Api-Key, X-iOS-Identifier            X-iOS-Identifier              ──▶  /localities/nearby
+     + X-App-Token                            forwards the sealed key and
+     + X-iOS-Identifier                       X-iOS-Identifier              ──▶  /localities/nearby
                               ◀─────────────  passes the result back         ◀──
 ```
 
@@ -22,7 +23,7 @@ iOS app (com.woosmap.app.woozies)            Python proxy                       
 | --- | --- |
 | `proxy/` | FastAPI proxy: App Attest and Play Integrity verification, an optional Firebase App Check path, a simulator debug-token path, and allow-listed Woosmap API forwarding |
 | `proxy/attestation/` | The attestation core (App Attest, Play Integrity, tokens, gateway check) |
-| `proxy/tests/` | 52 tests, including a fake Apple authority and a fake Play Integrity decoder, so nothing needs a device |
+| `proxy/tests/` | 68 tests, including a fake Apple authority and a fake Play Integrity decoder, so nothing needs a device |
 | `ios/` | SwiftUI app plus an XcodeGen `project.yml` |
 | `android/` | Kotlin + Jetpack Compose app using the same proxy |
 | `docs/` | [Architecture](docs/architecture.md): attestation flow, per-call validation, external calls, limitations |
@@ -33,13 +34,13 @@ iOS app (com.woosmap.app.woozies)            Python proxy                       
 cd proxy
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
-python -m pytest -q                      # optional: 52 tests
+python -m pytest -q                      # optional: 68 tests
 uvicorn woozies_proxy.main:build_app --factory --host 0.0.0.0 --port 8000 --reload
 ```
 
 `proxy/.env` already holds the simulator debug token, so the proxy starts straight away. It needs no Woosmap key. `.env` is git-ignored; `.env.example` documents every setting.
 
-Check the setup at `http://localhost:8000/health`. It reports whether App Attest, Firebase and debug tokens are enabled.
+The API reference, including how to use the `X-App-Token` header, is at `http://localhost:8000/redoc` (or `/docs` to try calls). Check the setup at `http://localhost:8000/health`. It reports whether App Attest, Firebase and debug tokens are enabled.
 
 **To turn on App Attest for real devices:**
 
@@ -121,7 +122,7 @@ curl -i "http://localhost:8000/localities/nearby?types=point_of_interest&locatio
   -H "X-iOS-Identifier: com.woosmap.app.woozies"
 ```
 
-You'll get `401 {"error":"app_token_missing"}`. Woosmap is never called.
+You'll get `401 {"error":"app_token_missing"}`. Woosmap is never called. The copied key doesn't help either: the proxy never uses an `X-Api-Key` header on an API call, only the key sealed in a valid app token.
 
 ## How the proxy handles a call
 
@@ -129,14 +130,14 @@ The proxy forwards `GET` and `POST` calls on any Woosmap API path listed in `ALL
 
 For each call, the proxy does the following:
 
-1. It checks `X-Woosmap-App-Token`: the signature, expiry, which client it's bound to, and the deny list. In `enforce` mode, anything invalid gets a 401 with a code such as `app_token_expired`. The app refreshes once on these codes and retries.
+1. It checks `X-App-Token`: the signature, expiry, which client it's bound to, and the deny list. In `enforce` mode, anything invalid gets a 401 with a code such as `app_token_expired`. The app refreshes once on these codes and retries.
 2. It checks the path is in `ALLOWED_APIS`, matching exactly. Any other path gets `404 api_not_allowed`, and Woosmap is never called.
 3. It captures the app headers `X-Client-Id`, `X-iOS-Identifier`, `X-App-Version` and `User-Agent`, plus the token's claims, in the log.
 4. It forwards the query string, except any `key` or `private_key` parameter, which is dropped and logged. For `POST`, it forwards the body and `Content-Type`.
-5. It calls Woosmap with the app's `X-Api-Key` and `X-iOS-Identifier`, passing on `Accept-Language` if present. If either header is missing, it returns `400 woosmap_key_missing` or `400 ios_identifier_missing` instead.
+5. It calls Woosmap with the app's key and `X-iOS-Identifier`, passing on `Accept-Language` if present. The key comes only from the token, where the proxy sealed it when the app attested; an `X-Api-Key` header on the call is never used. Attestation therefore needs `X-Api-Key`, or it returns `400 woosmap_key_missing`. If the token holds no key or the call has no app identifier, it returns `400 woosmap_key_missing` or `400 app_identifier_missing` instead.
 6. It returns Woosmap's status and JSON unchanged, with one exception. A 401 or 403 from Woosmap means the app's key is wrong or restricted, so it becomes `502 upstream_auth_failed`. That way the app never confuses it with its own token being rejected.
 
-`ATTEST_MODE` controls step 1: `enforce` rejects, `monitor` forwards but logs unverified calls, and `off` skips the check.
+`ATTEST_MODE` controls step 1: `enforce` rejects, `monitor` lets unverified calls past but logs them, and `off` skips the check. Because the key only comes from a valid token, a call without one still stops at step 5 with `400 woosmap_key_missing` in every mode.
 
 ## Firebase App Check (optional)
 
@@ -144,10 +145,10 @@ The Woozies app doesn't use Firebase, but the proxy supports it for apps that do
 
 ## Before going beyond a demo
 
-- **Treat the app's key as public:** it ships inside the app, so anyone can pull it out of the binary and call Woosmap directly with the bundle ID header, bypassing the proxy. Restrict it in the Woosmap Console to the iOS bundle ID and the products you use, and watch its usage.
+- **Treat the app's key as public:** sealing it in the app token keeps it off API calls, but it still ships inside the app, so anyone can pull it out of the binary and call Woosmap directly with the bundle ID header, bypassing the proxy. Restrict it in the Woosmap Console to the iOS bundle ID and the products you use, and watch its usage.
 - **Mind the Team ID header:** the proxy accepts any Team ID the app sends, so attestation only proves the app is signed with *some* team for a bundle ID in `IOS_BUNDLE_IDS`. That holds as long as the bundle ID is registered to your team in your Apple Developer account, because Apple won't issue it to anyone else.
 - **Turn off debug tokens:** leave `ATTEST_DEBUG_TOKENS` empty anywhere other than a developer machine.
 - **Use production builds:** App Store and TestFlight builds attest in the `production` environment. Set the entitlement to `production` and `IOS_ALLOW_DEVELOPMENT=false`.
-- **Keep the signing key stable:** set `ATTEST_SIGNING_KEY` (create one with `openssl ecparam -name prime256v1 -genkey -noout -out signing-key.pem`). Otherwise every restart invalidates issued tokens.
+- **Keep the signing key stable:** set `ATTEST_SIGNING_KEY` (create one with `openssl ecparam -name prime256v1 -genkey -noout -out signing-key.pem`). Otherwise every restart invalidates issued tokens. Likewise set `ATTEST_ENCRYPTION_KEY`, the secret that seals the app's key into its token (create one with `openssl rand -base64 32`), and keep it as private as the signing key: anyone who has it can read the key from any token.
 - **Use shared state:** registered App Attest keys live in memory, so a proxy restart means devices re-register. That's handled automatically, but production needs a database, and Redis for challenges.
 - **Serve over HTTPS:** put the proxy behind TLS and rate-limit the `/attest/*` endpoints.

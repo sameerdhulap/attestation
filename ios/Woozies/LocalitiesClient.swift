@@ -1,6 +1,6 @@
 import Foundation
 
-/// Calls Localities Nearby through the proxy, attaching the app token.
+/// Calls Localities Nearby through the proxy, attaching the app token, which carries the Woosmap key.
 struct LocalitiesClient {
     var baseURL = AppConfig.proxyBaseURL
     var attestation = AttestationService.shared
@@ -27,8 +27,7 @@ struct LocalitiesClient {
                                        resolvingAgainstBaseURL: false)!
         components.queryItems = query
         var request = URLRequest(url: components.url!)
-        request.setValue(token, forHTTPHeaderField: "X-Woosmap-App-Token")
-        request.setValue(AppConfig.woosmapAPIKey, forHTTPHeaderField: "X-Api-Key")
+        request.setValue(token, forHTTPHeaderField: "X-App-Token")
         request.setValue(AppConfig.clientId, forHTTPHeaderField: "X-Client-Id")
         request.setValue(Bundle.main.bundleIdentifier, forHTTPHeaderField: "X-iOS-Identifier")
         request.setValue(AppConfig.appVersion, forHTTPHeaderField: "X-App-Version")
