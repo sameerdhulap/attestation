@@ -12,7 +12,7 @@ iOS app (com.woosmap.app.woozies)            Python proxy                       
      + X-Api-Key                              and seals the key in the token
                               ◀─────────────  short-lived app token
   3. GET /localities/nearby  ─────────────▶  checks token and ALLOWED_APIS,
-     + X-Woosmap-App-Token                    forwards the sealed key and
+     + X-App-Token                            forwards the sealed key and
      + X-iOS-Identifier                       X-iOS-Identifier              ──▶  /localities/nearby
                               ◀─────────────  passes the result back         ◀──
 ```
@@ -40,7 +40,7 @@ uvicorn woozies_proxy.main:build_app --factory --host 0.0.0.0 --port 8000 --relo
 
 `proxy/.env` already holds the simulator debug token, so the proxy starts straight away. It needs no Woosmap key. `.env` is git-ignored; `.env.example` documents every setting.
 
-Check the setup at `http://localhost:8000/health`. It reports whether App Attest, Firebase and debug tokens are enabled.
+The API reference, including how to use the `X-App-Token` header, is at `http://localhost:8000/redoc` (or `/docs` to try calls). Check the setup at `http://localhost:8000/health`. It reports whether App Attest, Firebase and debug tokens are enabled.
 
 **To turn on App Attest for real devices:**
 
@@ -130,7 +130,7 @@ The proxy forwards `GET` and `POST` calls on any Woosmap API path listed in `ALL
 
 For each call, the proxy does the following:
 
-1. It checks `X-Woosmap-App-Token`: the signature, expiry, which client it's bound to, and the deny list. In `enforce` mode, anything invalid gets a 401 with a code such as `app_token_expired`. The app refreshes once on these codes and retries.
+1. It checks `X-App-Token`: the signature, expiry, which client it's bound to, and the deny list. In `enforce` mode, anything invalid gets a 401 with a code such as `app_token_expired`. The app refreshes once on these codes and retries.
 2. It checks the path is in `ALLOWED_APIS`, matching exactly. Any other path gets `404 api_not_allowed`, and Woosmap is never called.
 3. It captures the app headers `X-Client-Id`, `X-iOS-Identifier`, `X-App-Version` and `User-Agent`, plus the token's claims, in the log.
 4. It forwards the query string, except any `key` or `private_key` parameter, which is dropped and logged. For `POST`, it forwards the body and `Content-Type`.

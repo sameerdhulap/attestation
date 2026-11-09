@@ -94,7 +94,7 @@ sequenceDiagram
     Apple-->>App: attestation
     App->>Proxy: POST /attest/ios/register
     Proxy-->>App: app token (sealed Woosmap key)
-    App->>Proxy: GET /localities/nearby + X-Woosmap-App-Token
+    App->>Proxy: GET /localities/nearby + X-App-Token
 ```
 
 `/attest/ios/token` isn't called for a first-time user. It's only used once a key is registered.

@@ -47,7 +47,7 @@ def test_firebase_token_exchanged_and_accepted(make_client):
             "/localities/nearby?types=point_of_interest&location=1,2",
             headers={
                 **H,
-                "X-Woosmap-App-Token": resp.json()["token"],
+                "X-App-Token": resp.json()["token"],
                 "X-iOS-Identifier": BUNDLE_ID,
             },
         )

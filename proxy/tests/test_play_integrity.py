@@ -181,7 +181,7 @@ def test_android_token_exchanged_and_used(make_client, woosmap):
             "/localities/nearby?types=point_of_interest&location=19.13,72.93",
             headers={
                 **H,
-                "X-Woosmap-App-Token": resp.json()["token"],
+                "X-App-Token": resp.json()["token"],
                 "X-Android-Identifier": PACKAGE,
                 "X-Android-Fingerprint": SHA1,
             },

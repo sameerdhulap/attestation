@@ -26,9 +26,10 @@ from contextlib import asynccontextmanager
 
 import httpx
 from cryptography import x509
-from fastapi import FastAPI, Header, Request
+from fastapi import FastAPI, Header, Request, Security
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel
+from fastapi.security import APIKeyHeader
+from pydantic import BaseModel, Field
 
 from attestation.app_attest import AppAttestVerifier, load_apple_root
 from attestation.config import AttestationError, KeyRegistry
@@ -69,29 +70,100 @@ FORWARDED_HEADERS = ("accept-language", "content-type")
 PLATFORM_HEADERS = ("x-ios-identifier", "x-android-identifier", "x-android-fingerprint")
 
 
+# OpenAPI text, shown in /redoc and /docs ----------------------------------------
+API_DESCRIPTION = """
+Lets genuine mobile apps call Woosmap APIs without the Woosmap key travelling on each call.
+
+**How an app uses it**
+
+1. `POST /attest/challenge` for a one-time challenge (valid 5 minutes, single use).
+2. Prove the app is genuine with that challenge: App Attest (`/attest/ios/register`,
+   then `/attest/ios/token` to refresh), Play Integrity (`/attest/android/token`) or
+   Firebase App Check (`/attest/firebase/token`). Send the Woosmap key as `X-Api-Key`
+   on this call only.
+3. The proxy returns an **app token**. Send it as `X-App-Token` on every Woosmap API
+   call until it expires (`expires_in`, 30 minutes by default); refresh at about 80%.
+4. Call a Woosmap API path here, such as `GET /localities/nearby`. The proxy checks
+   the token and forwards the call to `https://api.woosmap.com` with the Woosmap key
+   taken from the token.
+
+On a `401` whose code starts with `app_token_`, get a new token and retry once.
+Errors are JSON: `{"error": "<code>"}`.
+
+# Authentication
+
+<!-- ReDoc-Inject: <security-definitions> -->
+"""
+APP_TOKEN_DOC = """
+The app token returned by an `/attest/*` endpoint. Required on every Woosmap API call.
+
+It's a JWT signed by this proxy (ES256), valid 30 minutes by default. It carries the
+client ID, the app (bundle ID or package), the platform, how the app was verified, a
+device identifier, and the app's Woosmap key, encrypted (AES-256-GCM) so the token
+can't be read for it. The proxy checks it locally, with no network call. It's never
+sent to Woosmap.
+
+Errors: `401 app_token_missing`, `app_token_invalid`, `app_token_expired` or
+`app_token_revoked`. Get a new token and retry once.
+"""
+CLIENT_ID_DOC = "Identifies the app's client to this proxy (`CLIENT_ID`). Not a secret."
+WOOSMAP_KEY_DOC = (
+    "The app's Woosmap key. Sent only while attesting: the proxy seals it, encrypted, "
+    "into the app token. Never read on Woosmap API calls."
+)
+IOS_ID_DOC = "The iOS bundle ID; must be in `IOS_BUNDLE_IDS`."
+ANDROID_ID_DOC = "The Android package; must be in `ANDROID_PACKAGES`."
+OPENAPI_TAGS = [
+    {"name": "Attestation", "description": "Prove the app is genuine and get an app token."},
+    {"name": "Woosmap API", "description": "Allow-listed Woosmap API paths, called with an app token."},
+    {"name": "Operational", "description": "Health and token-verification keys."},
+]
+
+app_token_header = APIKeyHeader(
+    name="X-App-Token", scheme_name="AppToken", description=APP_TOKEN_DOC, auto_error=False
+)
+
+
 class IosRegisterBody(BaseModel):
-    key_id: str
-    attestation: str
-    challenge: str
+    key_id: str = Field(description="Key ID from `DCAppAttestService.generateKey()`.")
+    attestation: str = Field(
+        description="Base64 attestation from `attestKey`, over SHA-256 of `challenge`."
+    )
+    challenge: str = Field(description="The challenge from `/attest/challenge`.")
 
 
 class IosTokenBody(BaseModel):
-    key_id: str
-    assertion: str
-    challenge: str
+    key_id: str = Field(description="The key ID registered with `/attest/ios/register`.")
+    assertion: str = Field(
+        description="Base64 assertion from `generateAssertion`, over SHA-256 of `challenge`."
+    )
+    challenge: str = Field(description="A new challenge from `/attest/challenge`.")
 
 
 class DebugTokenBody(BaseModel):
-    debug_token: str
+    debug_token: str = Field(description="A token listed in `ATTEST_DEBUG_TOKENS`.")
 
 
 class FirebaseTokenBody(BaseModel):
-    app_check_token: str
+    app_check_token: str = Field(description="A Firebase App Check token.")
 
 
 class AndroidTokenBody(BaseModel):
-    integrity_token: str
-    challenge: str
+    integrity_token: str = Field(
+        description="Play Integrity token requested with `challenge` as its nonce."
+    )
+    challenge: str = Field(description="The challenge from `/attest/challenge`.")
+
+
+class ChallengeResponse(BaseModel):
+    challenge: str = Field(description="One-time challenge (base64url).")
+    expires_in: int = Field(description="Seconds until the challenge expires.")
+
+
+class AppTokenResponse(BaseModel):
+    token: str = Field(description="The app token. Send it as `X-App-Token`.")
+    token_type: str = Field(description='Always `"app-token"`.')
+    expires_in: int = Field(description="Seconds until the token expires.")
 
 
 def _bundle_id(app_id: str) -> str:
@@ -102,7 +174,7 @@ def _bundle_id(app_id: str) -> str:
 def _token_body(issued: IssuedToken) -> dict:
     return {
         "token": issued.token,
-        "token_type": "woosmap-app-token",
+        "token_type": "app-token",
         "expires_in": issued.expires_in,
     }
 
@@ -159,7 +231,13 @@ def create_app(
         yield
         await app.state.upstream.aclose()
 
-    app = FastAPI(title="Woozies attestation proxy", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(
+        title="Woozies attestation proxy",
+        version="0.1.0",
+        description=API_DESCRIPTION,
+        openapi_tags=OPENAPI_TAGS,
+        lifespan=lifespan,
+    )
 
     def client_for(client_id: str | None):
         found = registry.get(client_id)
@@ -178,19 +256,34 @@ def create_app(
         return JSONResponse(status_code=err.status, content={"error": err.code})
 
     # Attestation ---------------------------------------------------------------
-    @app.post("/attest/challenge")
-    def challenge(x_client_id: str = Header(...)):
+    @app.post(
+        "/attest/challenge",
+        tags=["Attestation"],
+        summary="Get a one-time challenge",
+        response_model=ChallengeResponse,
+    )
+    def challenge(x_client_id: str = Header(..., description=CLIENT_ID_DOC)):
+        """Single use, valid 5 minutes, bound to the client. Prove the app with it next."""
         client_for(x_client_id)
         value, ttl = challenges.issue(x_client_id)
         return {"challenge": value, "expires_in": ttl}
 
-    @app.post("/attest/ios/register")
+    @app.post(
+        "/attest/ios/register",
+        tags=["Attestation"],
+        summary="iOS: register an App Attest key",
+        response_model=AppTokenResponse,
+    )
     def ios_register(
         body: IosRegisterBody,
-        x_client_id: str = Header(...),
-        x_apple_team_id: str | None = Header(None),
-        x_api_key: str | None = Header(None),
+        x_client_id: str = Header(..., description=CLIENT_ID_DOC),
+        x_apple_team_id: str | None = Header(
+            None, description="Apple Team ID (10 characters) the app is signed with."
+        ),
+        x_api_key: str | None = Header(None, description=WOOSMAP_KEY_DOC),
     ):
+        """First run on a device: verifies the attestation with Apple's root CA against
+        `<X-Apple-Team-Id>.<bundle ID>` and stores the key for later refreshes."""
         cfg = client_for(x_client_id)
         require_woosmap_key(x_api_key)
         if app_attest is None:
@@ -229,12 +322,19 @@ def create_app(
             )
         )
 
-    @app.post("/attest/ios/token")
+    @app.post(
+        "/attest/ios/token",
+        tags=["Attestation"],
+        summary="iOS: refresh with an App Attest assertion",
+        response_model=AppTokenResponse,
+    )
     def ios_token(
         body: IosTokenBody,
-        x_client_id: str = Header(...),
-        x_api_key: str | None = Header(None),
+        x_client_id: str = Header(..., description=CLIENT_ID_DOC),
+        x_api_key: str | None = Header(None, description=WOOSMAP_KEY_DOC),
     ):
+        """Later runs: checks the assertion with the registered key. `401
+        app_attest_unknown_key` means register again."""
         cfg = client_for(x_client_id)
         require_woosmap_key(x_api_key)
         if app_attest is None:
@@ -260,13 +360,18 @@ def create_app(
             )
         )
 
-    @app.post("/attest/debug/token")
+    @app.post(
+        "/attest/debug/token",
+        tags=["Attestation"],
+        summary="Simulator and emulator: debug token",
+        response_model=AppTokenResponse,
+    )
     def debug_token(
         body: DebugTokenBody,
-        x_client_id: str = Header(...),
-        x_ios_identifier: str | None = Header(None),
-        x_android_identifier: str | None = Header(None),
-        x_api_key: str | None = Header(None),
+        x_client_id: str = Header(..., description=CLIENT_ID_DOC),
+        x_ios_identifier: str | None = Header(None, description=IOS_ID_DOC),
+        x_android_identifier: str | None = Header(None, description=ANDROID_ID_DOC),
+        x_api_key: str | None = Header(None, description=WOOSMAP_KEY_DOC),
     ):
         """Simulator and CI only. Disabled unless ATTEST_DEBUG_TOKENS is set."""
         cfg = client_for(x_client_id)
@@ -295,11 +400,16 @@ def create_app(
             )
         )
 
-    @app.post("/attest/firebase/token")
+    @app.post(
+        "/attest/firebase/token",
+        tags=["Attestation"],
+        summary="Firebase App Check",
+        response_model=AppTokenResponse,
+    )
     def firebase_token(
         body: FirebaseTokenBody,
-        x_client_id: str = Header(...),
-        x_api_key: str | None = Header(None),
+        x_client_id: str = Header(..., description=CLIENT_ID_DOC),
+        x_api_key: str | None = Header(None, description=WOOSMAP_KEY_DOC),
     ):
         """Optional path for apps that use Firebase App Check (the Woozies app does not)."""
         cfg = client_for(x_client_id)
@@ -318,12 +428,17 @@ def create_app(
             )
         )
 
-    @app.post("/attest/android/token")
+    @app.post(
+        "/attest/android/token",
+        tags=["Attestation"],
+        summary="Android: Play Integrity",
+        response_model=AppTokenResponse,
+    )
     def android_token(
         body: AndroidTokenBody,
-        x_client_id: str = Header(...),
-        x_android_identifier: str | None = Header(None),
-        x_api_key: str | None = Header(None),
+        x_client_id: str = Header(..., description=CLIENT_ID_DOC),
+        x_android_identifier: str | None = Header(None, description=ANDROID_ID_DOC),
+        x_api_key: str | None = Header(None, description=WOOSMAP_KEY_DOC),
     ):
         """Android: the app requests a Play Integrity token with the challenge as its nonce.
 
@@ -361,12 +476,14 @@ def create_app(
             )
         )
 
-    @app.get("/.well-known/jwks.json")
+    @app.get("/.well-known/jwks.json", tags=["Operational"], summary="Token signing key")
     def jwks():
+        """Public key (JWKS) that verifies app tokens."""
         return issuer.public_jwks()
 
-    @app.get("/health")
+    @app.get("/health", tags=["Operational"], summary="Health and configuration")
     def health():
+        """Which verifiers are enabled, whether debug tokens are on, and the mode."""
         return {
             "status": "ok",
             "app_attest": app_attest is not None,
@@ -378,7 +495,41 @@ def create_app(
 
     # Woosmap proxy ----------------------------------------------------------------
     # Registered last so the attestation routes above take precedence.
-    @app.api_route("/{api_path:path}", methods=["GET", "POST"])
+    woosmap_route = dict(
+        path="/{api_path:path}",
+        tags=["Woosmap API"],
+        summary="Call a Woosmap API",
+        description=(
+            "Forwards the call to `https://api.woosmap.com/{api_path}` with the Woosmap "
+            "key from the app token. Allowed paths: "
+            + ", ".join(f"`{path}`" for path in settings.allowed_apis)
+            + ". Others get `404 api_not_allowed`.\n\n"
+            "Send `X-Client-Id`, `X-App-Token`, and `X-iOS-Identifier` or "
+            "`X-Android-Identifier` (with `X-Android-Fingerprint`). The query string and, "
+            "for POST, the body are passed on; `key` and `private_key` parameters are "
+            "dropped. Woosmap's status and JSON come back unchanged, except a Woosmap 401 "
+            "or 403, which becomes `502 upstream_auth_failed`."
+        ),
+        dependencies=[Security(app_token_header)],
+        # Read from the request in the handler, so declared here for the docs only.
+        openapi_extra={
+            "parameters": [
+                {"name": name, "in": "header", "required": required,
+                 "schema": {"type": "string"}, "description": doc}
+                for name, required, doc in (
+                    ("X-Client-Id", True, CLIENT_ID_DOC),
+                    ("X-iOS-Identifier", False, "iOS apps: the bundle ID."),
+                    ("X-Android-Identifier", False, "Android apps: the package."),
+                    ("X-Android-Fingerprint", False,
+                     "Android apps: SHA-1 of the signing certificate (`AA:BB:…`)."),
+                )
+            ]
+        },
+    )
+
+    # GET and POST registered separately so each gets its own OpenAPI operation ID.
+    @app.post(**woosmap_route, operation_id="woosmap_api_post")
+    @app.get(**woosmap_route, operation_id="woosmap_api_get")
     async def woosmap_api(api_path: str, request: Request):
         decision = gate.evaluate(request.headers)
         captured = {

@@ -28,7 +28,7 @@ def call(client, token=None, url=NEARBY, extra=None):
         "X-App-Version": "1.0",
     }
     if token:
-        headers["X-Woosmap-App-Token"] = token
+        headers["X-App-Token"] = token
     headers.update(extra or {})
     return client.get(url, headers=headers)
 
@@ -58,7 +58,7 @@ def test_query_and_key_forwarded_correctly(client, apple, woosmap):
     assert sent.headers["X-Api-Key"] == WOOSMAP_KEY
     assert sent.headers["X-iOS-Identifier"] == BUNDLE_ID
     assert sent.headers["Accept-Language"] == "fr"
-    assert "X-Woosmap-App-Token" not in sent.headers
+    assert "X-App-Token" not in sent.headers
 
 
 def test_other_allowed_api_forwarded(client, apple, woosmap):
@@ -85,7 +85,7 @@ def test_post_body_forwarded(make_client, apple, woosmap):
             "/distance/distancematrix/json",
             headers={
                 **H,
-                "X-Woosmap-App-Token": token,
+                "X-App-Token": token,
                 "X-iOS-Identifier": BUNDLE_ID,
             },
             json={"origins": "48.86,2.33", "destinations": "48.85,2.35"},
@@ -270,3 +270,13 @@ def test_firebase_disabled_unless_configured(client):
 
 def test_health(client):
     assert client.get("/health").json()["app_attest"] is True
+
+
+def test_openapi_documents_app_token(client):
+    schema = client.get("/openapi.json").json()
+    scheme = schema["components"]["securitySchemes"]["AppToken"]
+    assert (scheme["in"], scheme["name"]) == ("header", "X-App-Token")
+    api_route = schema["paths"]["/{api_path}"]["get"]
+    assert api_route["security"] == [{"AppToken": []}]
+    headers = {p["name"]: p["required"] for p in api_route["parameters"] if p["in"] == "header"}
+    assert headers["X-Client-Id"] is True

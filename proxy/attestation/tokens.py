@@ -1,4 +1,4 @@
-"""Woosmap app tokens: short-lived ES256 JWTs issued after a successful attestation."""
+"""App tokens: short-lived ES256 JWTs issued after a successful attestation."""
 from __future__ import annotations
 
 import base64
@@ -133,7 +133,7 @@ class TokenIssuer:
 
 
 class TokenVerifier:
-    """Verifies Woosmap app tokens locally against cached public keys (by `kid`).
+    """Verifies app tokens locally against cached public keys (by `kid`).
 
     The gateway would refresh `keys` from the published JWKS on a timer, keeping
     old keys until their tokens have expired.

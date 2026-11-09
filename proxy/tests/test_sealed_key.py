@@ -118,7 +118,7 @@ def test_debug_token_carries_sealed_key(client):
 
 def test_api_call_uses_sealed_key(client, woosmap):
     token = debug_token(client)
-    resp = client.get(NEARBY, headers={**CALL_HEADERS, "X-Woosmap-App-Token": token})
+    resp = client.get(NEARBY, headers={**CALL_HEADERS, "X-App-Token": token})
     assert resp.status_code == 200, resp.text
     assert woosmap.requests[-1].headers["X-Api-Key"] == WOOSMAP_KEY
 
@@ -127,7 +127,7 @@ def test_sealed_key_wins_over_header(client, woosmap):
     token = debug_token(client)
     client.get(
         NEARBY,
-        headers={**CALL_HEADERS, "X-Woosmap-App-Token": token, "X-Api-Key": "other"},
+        headers={**CALL_HEADERS, "X-App-Token": token, "X-Api-Key": "other"},
     )
     assert woosmap.requests[-1].headers["X-Api-Key"] == WOOSMAP_KEY
 
@@ -148,7 +148,7 @@ def test_header_key_never_used(make_client, woosmap, tmp_path):
     with make_client(signing_key_path=signing_key) as c:
         resp = c.get(
             NEARBY,
-            headers={**CALL_HEADERS, "X-Woosmap-App-Token": token, "X-Api-Key": "k"},
+            headers={**CALL_HEADERS, "X-App-Token": token, "X-Api-Key": "k"},
         )
     assert resp.status_code == 400
     assert resp.json() == {"error": "woosmap_key_missing"}
@@ -160,7 +160,7 @@ def test_app_attest_token_carries_sealed_key(client, apple, woosmap):
     assert resp.status_code == 200, resp.text
     token = resp.json()["token"]
     assert client.get(
-        NEARBY, headers={**CALL_HEADERS, "X-Woosmap-App-Token": token}
+        NEARBY, headers={**CALL_HEADERS, "X-App-Token": token}
     ).status_code == 200
     assert woosmap.requests[-1].headers["X-Api-Key"] == WOOSMAP_KEY
 
@@ -171,7 +171,7 @@ def test_rotated_encryption_key_rejects_old_tokens(make_client, woosmap, tmp_pat
     with make_client(signing_key_path=signing_key, key_encryption_key=old) as c:
         token = debug_token(c)
     with make_client(signing_key_path=signing_key, key_encryption_key=new) as c:
-        resp = c.get(NEARBY, headers={**CALL_HEADERS, "X-Woosmap-App-Token": token})
+        resp = c.get(NEARBY, headers={**CALL_HEADERS, "X-App-Token": token})
     assert resp.status_code == 401
     assert resp.json() == {"error": "app_token_invalid"}
     assert woosmap.requests == []

@@ -36,7 +36,7 @@ class LocalitiesClient(context: Context, private val attestation: AttestationSer
             val connection = URL("${AppConfig.proxyBaseUrl}/localities/nearby?$encoded")
                 .openConnection() as HttpURLConnection
             try {
-                connection.setRequestProperty("X-Woosmap-App-Token", token)
+                connection.setRequestProperty("X-App-Token", token)
                 connection.setRequestProperty("X-Client-Id", AppConfig.CLIENT_ID)
                 connection.setRequestProperty("X-Android-Identifier", packageName)
                 fingerprint?.let { connection.setRequestProperty("X-Android-Fingerprint", it) }
